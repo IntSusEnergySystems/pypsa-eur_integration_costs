@@ -31,11 +31,13 @@ if (EUROSTAT_BALANCES_DATASET := dataset_version("eurostat_balances"))["source"]
         message:
             "Retrieving Eurostat balances data"
         input:
-            tsv_gz=storage(EUROSTAT_BALANCES_DATASET["url"]),
+            zip_file=storage(EUROSTAT_BALANCES_DATASET["url"]),
         output:
-            tsv_gz=f"{EUROSTAT_BALANCES_DATASET['folder']}/estat_nrg_bal_c.tsv.gz",
+            zip_file=f"{EUROSTAT_BALANCES_DATASET['folder']}/balances.zip",
+            directory=directory(EUROSTAT_BALANCES_DATASET["folder"]),
         run:
-            copy2(input["tsv_gz"], output["tsv_gz"])
+            copy2(input["zip_file"], output["zip_file"])
+            unpack_archive(output["zip_file"], output["directory"])
 
 
 if (
@@ -99,7 +101,7 @@ elif (CORINE_DATASET := dataset_version("corine"))["source"] in ["primary"]:
         message:
             "Retrieving Corine land cover data"
         params:
-            apikey=os.environ.get("CORINE_API_TOKEN", ""),
+            apikey=os.environ.get("CORINE_API_TOKEN", config["secrets"]["corine"]),
         output:
             zip=f"{CORINE_DATASET['folder']}/corine.zip",
             tif_file=f"{CORINE_DATASET['folder']}/corine.tif",
@@ -109,7 +111,7 @@ elif (CORINE_DATASET := dataset_version("corine"))["source"] in ["primary"]:
             mem_mb=1000,
         retries: 2
         script:
-            scripts("retrieve_corine_dataset_primary.py")
+            "../scripts/retrieve_corine_dataset_primary.py"
 
 
 if (H2_SALT_CAVERNS_DATASET := dataset_version("h2_salt_caverns"))["source"] in [
@@ -317,62 +319,19 @@ if (EU_NUTS2021_DATASET := dataset_version("eu_nuts2021"))["source"] in [
             unpack_archive(output["zip_file"], Path(output.shapes_level_3).parent)
 
 
-if (
-    BIDDING_ZONES_ELECTRICITYMAPS_DATASET := dataset_version(
-        "bidding_zones_electricitymaps"
-    )
-)["source"] in ["primary", "archive"]:
-
-    rule retrieve_bidding_zones_electricitymaps:
-        input:
-            geojson=storage(BIDDING_ZONES_ELECTRICITYMAPS_DATASET["url"]),
-        output:
-            geojson=f"{BIDDING_ZONES_ELECTRICITYMAPS_DATASET['folder']}/bidding_zones_electricitymaps.geojson",
-        log:
-            "logs/retrieve_bidding_zones_electricitymaps.log",
-        resources:
-            mem_mb=1000,
-        retries: 2
-        run:
-            copy2(input["geojson"], output["geojson"])
-
-
-if (BIDDING_ZONES_ENTSOEPY_DATASET := dataset_version("bidding_zones_entsoepy"))[
-    "source"
-] in ["primary", "archive"]:
-
-    rule retrieve_bidding_zones_entsoepy:
-        output:
-            geojson=f"{BIDDING_ZONES_ENTSOEPY_DATASET['folder']}/bidding_zones_entsoepy.geojson",
-        log:
-            "logs/retrieve_bidding_zones_entsoepy.log",
-        resources:
-            mem_mb=1000,
-        retries: 2
-        run:
-            import entsoe
-            import geopandas as gpd
-            from urllib.error import HTTPError, URLError
-
-            logger.info("Downloading entsoe-py zones...")
-            gdfs: list[gpd.GeoDataFrame] = []
-            url = f"{BIDDING_ZONES_ENTSOEPY_DATASET['url']}"
-            for area in entsoe.Area:
-                name = area.name
-                try:
-                    file_url = f"{url}/{name}.geojson"
-                    gdfs.append(gpd.read_file(file_url))
-                except HTTPError as e:
-                    logger.debug(f"Area file not available for {name}: {e}")
-                    continue
-                except (URLError, TimeoutError) as e:
-                    raise Exception(f"Network error retrieving {name}: {e}")
-            shapes = pd.concat(gdfs, ignore_index=True)  # type: ignore
-
-            logger.info("Downloading entsoe-py zones... Done")
-
-            shapes.to_file(output.geojson)
-
+rule retrieve_bidding_zones:
+    message:
+        "Retrieving bidding zones data from ENTSO-E and Electricity Maps"
+    output:
+        file_entsoepy="data/busshapes/bidding_zones_entsoepy.geojson",
+        file_electricitymaps="data/busshapes/bidding_zones_electricitymaps.geojson",
+    log:
+        "logs/retrieve_bidding_zones.log",
+    resources:
+        mem_mb=1000,
+    retries: 2
+    script:
+        "../scripts/retrieve_bidding_zones.py"
 
 
 if (CUTOUT_DATASET := dataset_version("cutout"))["source"] in [
@@ -383,7 +342,7 @@ if (CUTOUT_DATASET := dataset_version("cutout"))["source"] in [
         message:
             "Retrieving cutout data for {wildcards.cutout}"
         input:
-            storage(CUTOUT_DATASET["url"] + "/{cutout}.nc"),
+            storage(CUTOUT_DATASET["url"] + "/files/{cutout}.nc"),
         output:
             CUTOUT_DATASET["folder"] + "/{cutout}.nc",
         log:
@@ -440,7 +399,6 @@ if (COSTS_DATASET := dataset_version("costs"))["source"] in [
 
 if (POWERPLANTS_DATASET := dataset_version("powerplants"))["source"] in [
     "primary",
-    "archive",
 ]:
 
     rule retrieve_powerplants:
@@ -475,169 +433,20 @@ if (SCIGRID_GAS_DATASET := dataset_version("scigrid_gas"))["source"] in [
             unpack_archive(output["zip_file"], output_folder)
 
 
-if (OPSD_DEMAND_DATA := dataset_version("opsd_electricity_demand"))["source"] in [
-    "build"
-]:
-
-    rule retrieve_electricity_demand_opsd:
-        message:
-            "Retrieving electricity demand data from OPSD from build source"
-        params:
-            versions=["2019-06-05", "2020-10-06"],
-        output:
-            csv=f"{OPSD_DEMAND_DATA['folder']}/electricity_demand_opsd_raw.csv",
-        log:
-            "logs/retrieve_electricity_demand_opsd.log",
-        resources:
-            mem_mb=5000,
-        retries: 2
-        script:
-            scripts("retrieve_electricity_demand_opsd.py")
-
-
-if (OPSD_DEMAND_DATA := dataset_version("opsd_electricity_demand"))["source"] in [
-    "archive"
-]:
-
-    rule retrieve_electricity_demand_opsd:
-        message:
-            "Retrieving electricity demand data from OPSD from archive"
-        input:
-            csv=storage(OPSD_DEMAND_DATA["url"]),
-        output:
-            csv=f"{OPSD_DEMAND_DATA['folder']}/electricity_demand_opsd_raw.csv",
-        retries: 2
-        run:
-            copy2(input["csv"], output["csv"])
-
-
-if (ENTSOE_DEMAND_DATA := dataset_version("entsoe_electricity_demand"))["source"] in [
-    "build"
-]:
-
-    ENTSOE_COUNTRIES = [
-        "AL",
-        "AT",
-        "BE",
-        "BA",
-        "BG",
-        "CH",
-        "CY",
-        "CZ",
-        "DE",
-        "DK",
-        "EE",
-        "ES",
-        "FI",
-        "FR",
-        "GB",
-        "GR",
-        "HR",
-        "HU",
-        "IE",
-        "IT",
-        "LT",
-        "LU",
-        "LV",
-        "MD",
-        "ME",
-        "MK",
-        "NL",
-        "NO",
-        "PL",
-        "PT",
-        "RO",
-        "RS",
-        "SE",
-        "SI",
-        "SK",
-        "UA",
-        "XK",
-    ]
-
-    rule retrieve_electricity_demand_entsoe_country:
-        message:
-            "Retrieving electricity demand data from ENTSO-E for {wildcards.country}"
-        params:
-            entsoe_token=os.environ.get("ENTSOE_API_TOKEN", ""),
-        output:
-            csv=f"{ENTSOE_DEMAND_DATA['folder']}"
-            + "/electricity_demand_entsoe_raw_{country}.csv",
-        log:
-            "logs/retrieve_electricity_demand_entsoe_{country}.log",
-        resources:
-            mem_mb=2000,
-        retries: 2
-        script:
-            scripts("retrieve_electricity_demand_entsoe.py")
-
-    rule retrieve_electricity_demand_entsoe:
-        message:
-            "Retrieving electricity demand data from ENTSO-E from build source"
-        input:
-            csvs=expand(
-                f"{ENTSOE_DEMAND_DATA['folder']}"
-                + "/electricity_demand_entsoe_raw_{country}.csv",
-                country=ENTSOE_COUNTRIES,
-            ),
-        output:
-            csv=f"{ENTSOE_DEMAND_DATA['folder']}/electricity_demand_entsoe_raw.csv",
-        run:
-            import pandas as pd
-
-            loads = [pd.read_csv(csv, index_col=0) for csv in input.csvs]
-            df = pd.concat(loads, axis=1, join="outer").sort_index()
-            df.to_csv(output.csv)
-
-
-if (ENTSOE_DEMAND_DATA := dataset_version("entsoe_electricity_demand"))["source"] in [
-    "archive"
-]:
-
-    rule retrieve_electricity_demand_entsoe:
-        message:
-            "Retrieving electricity demand data from ENTSO-E from archive"
-        input:
-            csv=storage(ENTSOE_DEMAND_DATA["url"]),
-        output:
-            csv=f"{ENTSOE_DEMAND_DATA['folder']}/electricity_demand_entsoe_raw.csv",
-        retries: 2
-        run:
-            copy2(input["csv"], output["csv"])
-
-
-if (NESO_DEMAND_DATA := dataset_version("neso_electricity_demand"))["source"] in [
-    "build"
-]:
-
-    rule retrieve_electricity_demand_neso:
-        message:
-            "Retrieving electricity demand data from NESO from build source"
-        output:
-            csv=f"{NESO_DEMAND_DATA['folder']}/electricity_demand_neso_raw.csv",
-        log:
-            "logs/retrieve_electricity_demand_neso.log",
-        resources:
-            mem_mb=5000,
-        retries: 2
-        script:
-            scripts("retrieve_electricity_demand_neso.py")
-
-
-if (NESO_DEMAND_DATA := dataset_version("neso_electricity_demand"))["source"] in [
-    "archive"
-]:
-
-    rule retrieve_electricity_demand_neso:
-        message:
-            "Retrieving electricity demand data from NESO from archive"
-        input:
-            csv=storage(NESO_DEMAND_DATA["url"]),
-        output:
-            csv=f"{NESO_DEMAND_DATA['folder']}/electricity_demand_neso_raw.csv",
-        retries: 2
-        run:
-            copy2(input["csv"], output["csv"])
+rule retrieve_electricity_demand:
+    message:
+        "Retrieving electricity demand data"
+    params:
+        versions=["2019-06-05", "2020-10-06"],
+    output:
+        "data/electricity_demand_raw.csv",
+    log:
+        "logs/retrieve_electricity_demand.log",
+    resources:
+        mem_mb=5000,
+    retries: 2
+    script:
+        "../scripts/retrieve_electricity_demand.py"
 
 
 if (
@@ -911,20 +720,6 @@ if (GEM_GSPT_DATASET := dataset_version("gem_gspt"))["source"] in [
             copy2(input["xlsx"], output["xlsx"])
 
 
-if (GEM_GCCT_DATASET := dataset_version("gem_gcct"))["source"] in [
-    "primary",
-    "archive",
-]:
-
-    rule retrieve_gem_cement_concrete_tracker:
-        input:
-            xlsx=storage(GEM_GCCT_DATASET["url"]),
-        output:
-            xlsx=f"{GEM_GCCT_DATASET['folder']}/Global-Cement-and-Concrete-Tracker.xlsx",
-        run:
-            copy2(input["xlsx"], output["xlsx"])
-
-
 if (BFS_ROAD_VEHICLE_STOCK_DATASET := dataset_version("bfs_road_vehicle_stock"))[
     "source"
 ] in [
@@ -1020,12 +815,6 @@ if (WDPA_DATASET := dataset_version("wdpa"))["source"] in [
             copy2(input["zip_file"], output["zip_file"])
             unpack_archive(output["zip_file"], output_folder)
 
-            # Extract {bYYYY} from the input file / URL
-            bYYYY = re.search(
-                r"WDPA_(\w{3}\d{4})_Public_shp.zip",
-                input["zip_file"],
-            ).group(1)
-
             for i in range(3):
                 # vsizip is special driver for directly working with zipped shapefiles in ogr2ogr
                 layer_path = (
@@ -1057,12 +846,6 @@ if (WDPA_MARINE_DATASET := dataset_version("wdpa_marine"))["source"] in [
             copy2(input["zip_file"], output["zip_file"])
             unpack_archive(output["zip_file"], output_folder)
 
-            # Extract {bYYYY} from the input file / URL
-            bYYYY = re.search(
-                r"WDPA_WDOECM_(\w{3}\d{4})_Public_marine_shp.zip",
-                input["zip_file"],
-            ).group(1)
-
             for i in range(3):
                 # vsizip is special driver for directly working with zipped shapefiles in ogr2ogr
                 layer_path = f"/vsizip/{output_folder}/WDPA_WDOECM_{bYYYY}_Public_marine_shp_{i}.zip"
@@ -1071,50 +854,40 @@ if (WDPA_MARINE_DATASET := dataset_version("wdpa_marine"))["source"] in [
 
 
 
-if (INSTRAT_CO2_PRICES_DATASET := dataset_version("instrat_co2_prices"))["source"] in [
-    "primary",
-]:
-
-    rule retrieve_co2_prices:
-        message:
-            "Retrieving CO2 emission allowances price in EU ETS system"
-        output:
-            csv=f"{INSTRAT_CO2_PRICES_DATASET['folder']}/prices_eu_ets_all.csv",
-        log:
-            "logs/retrieve_co2_prices.log",
-        resources:
-            mem_mb=5000,
-        retries: 2
-        run:
-            import pandas as pd
-
-            url = "https://energy-api.instrat.pl/api/prices/co2?all=1"
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json",
-                "Referer": "https://energy.instrat.pl/",
-            }
-
-            r = requests.get(url, headers=headers)
-            r.raise_for_status()
-
-            df = pd.read_json(r.text)
-            df.to_csv(output["csv"], index=False)
+# Versioning not implemented as the dataset is used only for validation
+# License - (c) EEX AG, all rights reserved. Personal copy for non-commercial use permitted
+rule retrieve_monthly_co2_prices:
+    message:
+        "Retrieving monthly CO2 prices data for validation"
+    input:
+        storage(
+            "https://public.eex-group.com/eex/eua-auction-report/emission-spot-primary-market-auction-report-2019-data.xls",
+        ),
+    output:
+        "data/validation/emission-spot-primary-market-auction-report-2019-data.xls",
+    log:
+        "logs/retrieve_monthly_co2_prices.log",
+    resources:
+        mem_mb=5000,
+    retries: 2
+    run:
+        copy2(input[0], output[0])
 
 
-if (
-    WORLD_BANK_COMMODITY_PRICES_DATASET := dataset_version("worldbank_commodity_prices")
-)["source"] in ["primary", "archive"]:
-
-    rule retrieve_worldbank_commodity_prices:
-        message:
-            "Retrieving monthly commodity price time series (including fossil fuels)"
-        input:
-            xlsx=storage(WORLD_BANK_COMMODITY_PRICES_DATASET["url"]),
-        output:
-            xlsx=f"{WORLD_BANK_COMMODITY_PRICES_DATASET['folder']}/CMO-Historical-Data-Monthly.xlsx",
-        run:
-            copy2(input["xlsx"], output["xlsx"])
+# Versioning not implemented as the dataset is used only for validation
+# License - custom; no restrictions on use and redistribution, attribution required
+rule retrieve_monthly_fuel_prices:
+    message:
+        "Retrieving monthly fuel prices data for validation"
+    output:
+        "data/validation/energy-price-trends-xlsx-5619002.xlsx",
+    log:
+        "logs/retrieve_monthly_fuel_prices.log",
+    resources:
+        mem_mb=5000,
+    retries: 2
+    script:
+        "../scripts/retrieve_monthly_fuel_prices.py"
 
 
 if (TYDNP_DATASET := dataset_version("tyndp"))["source"] in ["primary", "archive"]:
@@ -1147,69 +920,24 @@ if (TYDNP_DATASET := dataset_version("tyndp"))["source"] in ["primary", "archive
 
 
 
-def get_osm_archive_files(version):
-    return [
+if OSM_DATASET["source"] in ["archive"]:
+
+    OSM_ARCHIVE_FILES = [
         "buses.csv",
         "converters.csv",
         "lines.csv",
         "links.csv",
         "transformers.csv",
         # Newer versions include the additional map.html file for visualisation
-        *(["map.html"] if float(version) >= 0.6 else []),
+        *(["map.html"] if float(OSM_DATASET["version"]) >= 0.6 else []),
     ]
-
-
-def get_osm_network_incumbent(
-    version: str = "latest",
-    source: str = "archive",
-) -> pd.Series:
-    fp = workflow.source_path("../data/versions.csv")
-    data_versions = load_data_versions(fp)
-    name = "osm"
-
-    dataset = data_versions.loc[
-        (data_versions["dataset"] == name)
-        & (data_versions["source"] == source)
-        & (data_versions["supported"])  # Limit to supported versions only
-        & (data_versions["version"] == version if "latest" != version else True)
-        & (data_versions["latest"] if "latest" == version else True)
-    ]
-
-    if dataset.empty:
-        raise ValueError(
-            f"OSM network for version '{version}' not found in data/versions.csv."
-        )
-
-    # Return single-row DataFrame as a Series
-    dataset = dataset.squeeze()
-
-    # Generate output folder path in the `data` directory
-    dataset["folder"] = Path(
-        "data", name, dataset["source"], dataset["version"]
-    ).as_posix()
-
-    return dataset
-
-
-def input_base_network_incumbent(w):
-    version = config_provider("osm_network_release", "compare_to", "version")(w)
-    source = config_provider("osm_network_release", "compare_to", "source")(w)
-    osm_dataset = get_osm_network_incumbent(version, source)
-    osm_path = osm_dataset["folder"]
-    components = {"buses", "lines", "links", "converters", "transformers"}
-    inputs = {c: f"{osm_path}/{c}.csv" for c in components}
-    return inputs
-
-
-if OSM_DATASET["source"] in ["archive"]:
-    OSM_ARCHIVE_FILES = get_osm_archive_files(OSM_DATASET["version"])
 
     rule retrieve_osm_archive:
         message:
             "Retrieving OSM archive data"
         input:
             **{
-                file: storage(f"{OSM_DATASET['url']}/{file}")
+                file: storage(f"{OSM_DATASET['url']}/files/{file}")
                 for file in OSM_ARCHIVE_FILES
             },
         output:
@@ -1224,50 +952,8 @@ if OSM_DATASET["source"] in ["archive"]:
                 copy2(input[key], output[key])
 
 
+elif OSM_DATASET["source"] == "build":
 
-# Only create incumbent rule if it points to a different folder
-OSM_DATASET_INCUMBENT = get_osm_network_incumbent(
-    version=config.get("osm_network_release", {})
-    .get("compare_to", {})
-    .get("version", "latest"),
-    source=config.get("osm_network_release", {})
-    .get("compare_to", {})
-    .get("source", "archive"),
-)
-
-if OSM_DATASET_INCUMBENT["source"] in ["archive"] and OSM_DATASET_INCUMBENT[
-    "folder"
-] != OSM_DATASET.get("folder"):
-
-    OSM_ARCHIVE_FILES_INCUMBENT = get_osm_archive_files(
-        OSM_DATASET_INCUMBENT["version"]
-    )
-
-    rule retrieve_osm_archive_incumbent:
-        message:
-            "Retrieving OSM archive incumbent data"
-        input:
-            **{
-                file: storage(f"{OSM_DATASET_INCUMBENT['url']}/{file}")
-                for file in OSM_ARCHIVE_FILES_INCUMBENT
-            },
-        output:
-            **{
-                file: f"{OSM_DATASET_INCUMBENT['folder']}/{file}"
-                for file in OSM_ARCHIVE_FILES_INCUMBENT
-            },
-        log:
-            "logs/retrieve_osm_archive_incumbent.log",
-        threads: 1
-        resources:
-            mem_mb=500,
-        run:
-            for key in input.keys():
-                copy2(input[key], output[key])
-
-
-
-if OSM_DATASET["source"] == "build":
     OSM_RAW_JSON = [
         "cables_way.json",
         "lines_way.json",
@@ -1278,7 +964,7 @@ if OSM_DATASET["source"] == "build":
 
     rule retrieve_osm_data_raw:
         message:
-            "Retrieving OSM electricity grid raw data for {wildcards.country}"
+            "Retrieving OSM raw data for {wildcards.country}"
         params:
             overpass_api=config_provider("overpass_api"),
         output:
@@ -1292,7 +978,7 @@ if OSM_DATASET["source"] == "build":
             "logs/retrieve_osm_data_{country}.log",
         threads: 1
         script:
-            scripts("retrieve_osm_data.py")
+            "../scripts/retrieve_osm_data.py"
 
     rule retrieve_osm_data_raw_all:
         input:
@@ -1334,7 +1020,7 @@ elif NATURA_DATASET["source"] == "build":
         log:
             "logs/build_natura.log",
         script:
-            scripts("build_natura.py")
+            "../scripts/build_natura.py"
 
 
 if (OSM_BOUNDARIES_DATASET := dataset_version("osm_boundaries"))["source"] in [
@@ -1350,7 +1036,7 @@ if (OSM_BOUNDARIES_DATASET := dataset_version("osm_boundaries"))["source"] in [
             "logs/retrieve_osm_boundaries_{country}_adm1.log",
         threads: 1
         script:
-            scripts("retrieve_osm_boundaries.py")
+            "../scripts/retrieve_osm_boundaries.py"
 
 elif (OSM_BOUNDARIES_DATASET := dataset_version("osm_boundaries"))["source"] in [
     "archive"
@@ -1422,7 +1108,6 @@ if (LAU_REGIONS_DATASET := dataset_version("lau_regions"))["source"] in [
             "Retrieving seawater temperature data for {wildcards.year}"
         params:
             default_cutout=config_provider("atlite", "default_cutout"),
-            test_data_url=dataset_version("seawater_temperature")["url"],
         output:
             seawater_temperature="data/seawater_temperature_{year}.nc",
         log:
@@ -1430,7 +1115,7 @@ if (LAU_REGIONS_DATASET := dataset_version("lau_regions"))["source"] in [
         resources:
             mem_mb=10000,
         script:
-            scripts("retrieve_seawater_temperature.py")
+            "../scripts/retrieve_seawater_temperature.py"
 
     rule retrieve_hera_data_test_cutout:
         message:

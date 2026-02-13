@@ -9,6 +9,7 @@ rule solve_sector_network:
     params:
         solving=config_provider("solving"),
         foresight=config_provider("foresight"),
+        sector=config_provider("sector"),
         co2_sequestration_potential=config_provider(
             "sector", "co2_sequestration_potential", default=200
         ),
@@ -17,6 +18,7 @@ rule solve_sector_network:
         network=resources(
             "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc"
         ),
+        co2_totals_name=resources("co2_totals.csv"),
     output:
         network=RESULTS
         + "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc",
@@ -41,4 +43,4 @@ rule solve_sector_network:
             + "benchmarks/solve_sector_network/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}"
         )
     script:
-        scripts("solve_network.py")
+        "../scripts/solve_network.py"

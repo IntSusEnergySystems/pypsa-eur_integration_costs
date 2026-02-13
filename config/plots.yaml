@@ -1,0 +1,42 @@
+Sepia_plots:
+ CO2 emissions by sector: true
+ CO2 emissions by source: true
+ Cumulative CO2 emissions by sector: false
+ Cumulative CO2 emissions by source: false
+ Sankey diagram: true
+ Carbon Sankey diagram: true
+ Renewable energy share: false
+ Final energy consumption by origin: false
+ Share of domestic production: false
+ Final energy consumption by each sector: true
+ Mix of secondary energies: false
+ Final energy consumption by carrier for each sector: true
+ 
+Pypsa_plots:
+ Sectoral Demands: true
+ Annual Costs: true
+ Annual Clustered Costs: true
+ Annual Investment Costs: true
+ Annual Operational Costs: true
+ CO2 and Electricity Prices: true
+ Capacities: true
+ Storage Capacities: true
+ Heat Dispatch Winter: true
+ Heat Dispatch Summer: true
+ Power Dispatch Winter: true
+ Power Dispatch Summer: true
+ Map Plots: true    
+ H2 Map Plots: true
+ Gas Map Plots: true
+ 
+Scenario_plots:
+ Annual Costs: true
+ Annual Investment Costs: true
+ Capacities: true
+ Storage Capacities: true
+ Integration Costs: true
+ Penetration Level: true
+ Dispatch: true
+ Valcoe: true
+ Waterfall: true
+ 

@@ -120,7 +120,7 @@ def add_brownfield(
         ].index
         h2_retrofitted = n.links[
             (n.links.carrier == "H2 pipeline retrofitted")
-            & (n.links.build_year == year)
+            & (n.links.build_year != year)
         ].index
 
         # pipe capacity always set in prepare_sector_network to todays gas grid capacity * H2_per_CH4

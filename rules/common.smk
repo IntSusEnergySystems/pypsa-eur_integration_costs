@@ -93,8 +93,10 @@ def load_data_versions(file_path):
         comment="#",
     )
 
-    # Turn space-separated tags into individual columns
-    data_versions["tags"] = data_versions["tags"].str.split()
+    # Turn 'tags' column from string representation of list to individual columns
+    data_versions["tags"] = data_versions["tags"].apply(
+        lambda x: json.loads(x.replace("'", '"'))
+    )
     exploded = data_versions.explode("tags")
     dummies = pd.get_dummies(exploded["tags"], dtype=bool)
     tags_matrix = dummies.groupby(dummies.index).max()

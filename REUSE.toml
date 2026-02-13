@@ -5,6 +5,7 @@ SPDX-PackageDownloadLocation = "https://github.com/pypsa/pypsa-eur"
 
 [[annotations]]
 path = [
+    "doc/configtables/*",
     "doc/data_inventory.csv",
     "doc/img/*",
     "test/test_data/*",
@@ -19,9 +20,7 @@ path = [
     "pixi.lock",
     "matplotlibrc",
     "envs/*.pin.txt",
-    "envs/environment.yaml",
-    "config/config.default.yaml",
-    "config/schema.json"
+    "envs/environment.yaml"
 ]
 SPDX-FileCopyrightText = "The PyPSA-Eur Authors"
 SPDX-License-Identifier = "CC0-1.0"

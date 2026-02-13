@@ -43,7 +43,7 @@ import yaml
 from linopy.remote.oetc import OetcCredentials, OetcHandler, OetcSettings
 from pypsa.descriptors import get_activity_mask
 from pypsa.descriptors import get_switchable_as_dense as get_as_dense
-
+from prepare_sector_network import determine_emission_sectors
 from scripts._benchmark import memory_logger
 from scripts._helpers import (
     PYPSA_V1,
@@ -465,7 +465,7 @@ def prepare_network(
         n.add("Carrier", "load")
         buses_i = n.buses.index
         if isinstance(load_shedding, bool):
-            load_shedding = 1e5  # Eur/MWh
+            load_shedding = 3000  # Eur/MWh
 
         n.add(
             "Generator",
@@ -473,7 +473,7 @@ def prepare_network(
             " load",
             bus=buses_i,
             carrier="load",
-            marginal_cost=load_shedding,  # Eur/MWh
+            marginal_cost=3000,  # Eur/MWh
             p_nom=np.inf,
         )
 
@@ -526,7 +526,26 @@ def prepare_network(
             n, limit_dict=limit_dict, planning_horizons=planning_horizons
         )
 
-
+def imposed_TYNDP(n, foresight, config):
+   ''' This funtion impse values for TYNDP for transmissions lines'''
+   tyndp_values_mapping = {
+       ("BE0 0", "FR0 0"): {"s_nom": "be_fr", "s_nom_min": "be_fr"},
+       ("BE0 0", "NL0 0"): {"s_nom": "be_nl", "s_nom_min": "be_nl"},
+       ("DE0 0", "FR0 0"): {"s_nom": "de_fr", "s_nom_min": "de_fr"},
+       ("DE0 0", "NL0 0"): {"s_nom": "de_nl", "s_nom_min": "de_nl"},}
+   if foresight == "overnight":
+       for index, row in n.lines.iterrows():
+        key = (row["bus0"], row["bus1"])
+        if key in tyndp_values_mapping:
+         values = tyndp_values_mapping[key]
+         n.lines.loc[index, "s_nom"] = config["TYNDP_values"][values["s_nom"]]
+         n.lines.loc[index, "s_nom_min"] = config["TYNDP_values"][values["s_nom_min"]]
+       if config["TYNDP_values"]["expansion_limit"] == True:  
+        n.lines["s_nom_max"] = n.lines["s_nom"] * config["TYNDP_values"]["max_expansion"]
+        condition = (n.links['carrier'] == 'DC')
+        n.links.loc[condition, "p_nom_max"] = n.links.loc[condition, "p_nom"] * config["TYNDP_values"]["max_expansion"]
+   return n
+   
 def add_CCL_constraints(
     n: pypsa.Network, config: dict, planning_horizons: str | None
 ) -> None:
@@ -1162,6 +1181,244 @@ def add_co2_atmosphere_constraint(n, snapshots):
             n.model.add_constraints(lhs <= rhs, name=f"GlobalConstraint-{name}")
 
 
+def constraint_vre_capacities(n):
+ if (
+    snakemake.config["run"]["name"].startswith(("flexible"))
+    and snakemake.config["run"]["name"] not in ["flexible_nuclear"]
+):
+   planning_horizon = int(snakemake.wildcards.planning_horizons)
+   network = pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")
+   if foresight == "overnight":
+         generator_types = ["solar", "solar rooftop", "offwind-ac", "offwind-dc", "onwind", "offwind-float","solar-hsat"]
+         gen_mask = network.generators.carrier.isin(generator_types)
+         filtered_generators = network.generators.loc[gen_mask, "p_nom_opt"].round(2)
+         n.generators.loc[gen_mask, "p_nom_min"] = filtered_generators
+         n.generators.loc[gen_mask, "p_nom_max"] = filtered_generators
+         n.generators.loc["BE0 0 nuclear", "p_nom"] = 2000
+         n.generators.loc["BE0 0 nuclear", "p_nom_min"] = 2000
+ elif snakemake.config["run"]["name"] == "flexible_nuclear":
+   planning_horizon = int(snakemake.wildcards.planning_horizons)
+   network = pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")
+   if foresight == "overnight":
+         generator_types = ["nuclear"]
+         gen_mask = network.generators.carrier.isin(generator_types)
+         filtered_generators = network.generators.loc[gen_mask, "p_nom_opt"].round(2)
+         n.generators.loc[gen_mask, "p_nom_min"] = filtered_generators
+         n.generators.loc[gen_mask, "p_nom_max"] = filtered_generators
+         n.generators.loc[gen_mask, "p_nom"] = filtered_generators
+         n.generators.loc[gen_mask, "p_max_pu"] = 0.9999
+ else:
+         n.generators.loc["BE0 0 nuclear", "p_nom"] = 2000
+         n.generators.loc["BE0 0 nuclear", "p_nom_min"] = 2000
+         
+ return n
+
+def add_max_vre_constraint(n):
+ if (
+    snakemake.config["run"]["name"].startswith(("flexible"))
+    and snakemake.config["run"]["name"] not in ["flexible_nuclear"]
+):
+  planning_horizon = int(snakemake.wildcards.planning_horizons)
+  generator_types = ["solar", "solar rooftop", "offwind-ac", "offwind-dc", "onwind", "offwind-float","solar-hsat"]
+  if foresight == "overnight":
+   if snakemake.config["run"]["name"].startswith(("flexible")):
+        network = pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")
+        # Define a simple grouping function
+  def group(df, b="bus"):
+            """
+            Group the given dataframe by bus.
+            """
+            return df[b].to_xarray()
+
+  for gen_type in generator_types:
+            # Filter generators of the given type
+            gen_i = n.generators.index[n.generators.carrier == gen_type]
+
+            if gen_i.empty:
+                print(f"No generators of type {gen_type} found. Skipping.")
+                continue  # Skip if no generators of this type
+
+            grouped_buses = group(n.generators.loc[gen_i])
+
+            local_gen_p = (
+                    n.model["Generator-p"]
+                    .loc[:, gen_i]
+                    .groupby(grouped_buses)
+                    .sum()
+                )
+
+            # Calculate total VRE generation per bus
+            vre_gen = (local_gen_p * n.snapshot_weightings.generators).sum("snapshot")
+
+            # Get the constraint data (e.g., max allowable generation per bus)
+            gen_mask = network.generators.carrier == gen_type
+            filtered_generators = network.generators_t.p.loc[:, gen_mask]
+            data = filtered_generators.sum(axis=0)
+            data_xr = data.to_xarray()
+
+            # Convert bus_info_network to xarray.DataArray
+            bus_info_network = network.generators.loc[data_xr.coords["name"].values, "bus"]
+            bus_info_network_xr = xr.DataArray(bus_info_network, dims="name")
+            # bus_info_network = network.generators.loc[data_xr.Generator, "bus"]
+            # bus_info_network_xr = xr.DataArray(bus_info_network, dims="Generator")
+
+            # Aggregate constraint data by bus
+            data_xr_bus = data_xr.groupby(bus_info_network_xr).sum()
+
+            # Apply the constraint: generation must be ≤ data values
+            for bus in vre_gen.coords["bus"].values:
+                n.model.add_constraints(
+                    vre_gen.sel(bus=bus) <= data_xr_bus.sel(bus=bus),
+                    name=f"{gen_type}_generation_limit_{bus}"
+                )
+            print(f"Constraint added for {gen_type}.")
+
+ print("All constraints added.")
+  
+def add_max_nuclear_constraint(n):
+ if snakemake.config["run"]["name"] == "flexible_nuclear":
+  planning_horizon = int(snakemake.wildcards.planning_horizons)
+  gen_types = ["nuclear"]
+  if foresight == "overnight":
+    if snakemake.config["run"]["name"] == "flexible_nuclear":
+        network = pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")    
+  def group(df, b="bus"):
+            """
+            Group the given dataframe by bus.
+            """
+            return df[b].to_xarray()
+
+  for gen_type in gen_types:
+            # Filter generators of the given type
+            gen_i = n.generators.index[n.generators.carrier == gen_type]
+
+            if gen_i.empty:
+                print(f"No generators of type {gen_type} found. Skipping.")
+                continue  # Skip if no generators of this type
+
+            grouped_buses = group(n.generators.loc[gen_i])
+
+            local_gen_p = (
+                    n.model["Generator-p"]
+                    .loc[:, gen_i]
+                    .groupby(grouped_buses)
+                    .sum()
+                )
+
+            # Calculate total VRE generation per bus
+            nuc_gen = (local_gen_p * n.snapshot_weightings.generators).sum("snapshot")
+
+            # Get the constraint data (e.g., max allowable generation per bus)
+            gen_mask = network.generators.carrier == gen_type 
+            filtered_generators = network.generators_t.p.loc[:, gen_mask]
+            data = filtered_generators.sum(axis=0)
+            data_xr = data.to_xarray()
+            # Convert bus_info_network to xarray.DataArray
+            bus_info_network = network.generators.loc[data_xr.coords["name"].values, "bus"]
+            bus_info_network_xr = xr.DataArray(bus_info_network, dims="name")
+
+            # Aggregate constraint data by bus
+            data_xr_bus = data_xr.groupby(bus_info_network_xr).sum()
+
+            # Apply the constraint: generation must be ≤ data values
+            for bus in nuc_gen.coords["bus"].values:
+                n.model.add_constraints(
+                    nuc_gen.sel(bus=bus) <= data_xr_bus.sel(bus=bus),
+                    name=f"{gen_type}_generation_limit_{bus}"
+                )
+            print(f"Constraint added for {gen_type}.")
+
+ print("All constraints added.")
+  
+def add_co2limit_country(n, limit_countries, nyears=1.0):
+    """
+    Add a set of emissions limit constraints for specified countries.
+    The countries and emissions limits are specified in the config file entry 'co2_budget_country_{investment_year}'.
+    Parameters
+    ----------
+    n : pypsa.Network
+    config : dict
+    limit_countries : dict
+    nyears: float, optional
+        Used to scale the emissions constraint to the number of snapshots of the base network.
+    """
+    logger.info(f"Adding CO2 budget limit for each country as per unit of 1990 levels")
+
+    countries = n.config["countries"]
+
+    # TODO: import function from prepare_sector_network? Move to common place?
+    sectors = determine_emission_sectors(options)
+
+    # convert Mt to tCO2
+    co2_totals = 1e6 * pd.read_csv(snakemake.input.co2_totals_name, index_col=0)
+    co2_limit_countries = co2_totals.loc[countries, sectors].sum(axis=1)
+    co2_limit_countries = co2_limit_countries.loc[
+        co2_limit_countries.index.isin(limit_countries.keys())
+    ]
+    
+    co2_limit_countries *= co2_limit_countries.index.map(limit_countries) * nyears
+    co2_limit_countries = (co2_limit_countries)
+
+    p = n.model["Link-p"]  # dimension: (time, component)
+
+    # NB: Most country-specific links retain their locational information in bus1 (except for DAC, where it is in bus2, and pattern sources, where it is in bus0)
+    country = n.links.bus1.map(n.buses.location).map(n.buses.country)
+    
+    country_DAC = (
+        n.links[n.links.carrier == "DAC"]
+        .bus3.map(n.buses.location).map(n.buses.country)
+    )
+    country[country_DAC.index] = country_DAC
+    patterns = ["process emissions", "HVC to air", "electrobiofuels","unsustainable bioliquids","biomass-to-methanol","biomass to liquid"]
+
+    for pattern in patterns:
+      source = n.links[n.links.carrier.str.contains(pattern)].bus0.map(n.buses.location).map(n.buses.country)
+      country[source.index] = source
+    mask = country.isna() | (country == '')
+    country[mask] = country[mask].index.str[:2]
+    country = country[country != 'EU']
+    lhs = []
+    for port in [col[3:] for col in n.links if col.startswith("bus")]:
+        if port == str(0):
+            efficiency = (
+                n.links["efficiency"].apply(lambda x: 1.0).rename("efficiency0")
+            )
+        elif port == str(1):
+            efficiency = n.links["efficiency"]
+        else:
+            efficiency = n.links[f"efficiency{port}"]
+        mask = n.links[f"bus{port}"].map(n.buses.carrier).eq("co2")
+
+        idx = n.links[mask].index
+        exclude = ["EU oil refining", "EU methanol import", "EU oil import"]
+        idx = idx[~np.isin(idx, exclude)]
+        idx = idx[idx.isin(country.index)]
+        grouping = country.loc[idx]
+
+        if not grouping.isnull().all():
+            expr = (
+                (p.loc[:, idx] * efficiency[idx])
+                .groupby(grouping, axis=1)
+                .sum()
+                * n.snapshot_weightings.generators
+            ).sum(dims="snapshot")
+            lhs.append(expr)
+
+    lhs = sum(lhs)  # dimension: (country)
+    lhs = lhs.rename({list(lhs.dims)[0]: "snapshot"})
+    rhs = pd.Series(co2_limit_countries)  # dimension: (country)
+    for ct in lhs.indexes["snapshot"]:
+        n.model.add_constraints(
+            lhs.loc[ct] <= rhs[ct],
+            name=f"GlobalConstraint-co2_limit_per_country{ct}",
+        )
+        n.add(
+            "GlobalConstraint",
+            f"co2_limit_per_country{ct}",
+            constant=rhs[ct],
+            sense="<=",
+            type="",
+        ) 
 def extra_functionality(
     n: pypsa.Network, snapshots: pd.DatetimeIndex, planning_horizons: str | None = None
 ) -> None:
@@ -1199,12 +1456,12 @@ def extra_functionality(
 
     if EQ_o := constraints["EQ"]:
         add_EQ_constraints(n, EQ_o.replace("EQ", ""))
-
-    if {"solar-hsat", "solar"}.issubset(
+    if not snakemake.config["run"]["name"].startswith("flexible") or snakemake.config["run"]["name"] == "flexible_nuclear":
+     if {"solar-hsat", "solar"}.issubset(
         config["electricity"]["renewable_carriers"]
-    ) and {"solar-hsat", "solar"}.issubset(
+     ) and {"solar-hsat", "solar"}.issubset(
         config["electricity"]["extendable_carriers"]["Generator"]
-    ):
+     ):
         add_solar_potential_constraints(n, config)
 
     if n.config.get("sector", {}).get("tes", False):
@@ -1219,6 +1476,8 @@ def extra_functionality(
     add_battery_constraints(n)
     add_lossy_bidirectional_link_constraints(n)
     add_pipe_retrofit_constraint(n)
+    add_max_vre_constraint(n)
+    add_max_nuclear_constraint(n)
     if n._multi_invest:
         add_carbon_constraint(n, snapshots)
         add_carbon_budget_constraint(n, snapshots)
@@ -1231,7 +1490,14 @@ def extra_functionality(
 
     if config["sector"]["imports"]["enable"]:
         add_import_limit_constraint(n, snapshots)
-
+    if n.config["co2_budget_national"]:
+        # prepare co2 constraint
+        nhours = n.snapshot_weightings.generators.sum()
+        nyears = nhours / 8760
+        investment_year = int(snakemake.wildcards.planning_horizons[-4:])
+        limit_countries = snakemake.config["co2_budget_national"][investment_year]
+        # add co2 constraint for each country
+        add_co2limit_country(n, limit_countries, nyears)
     if n.params.custom_extra_functionality:
         source_path = n.params.custom_extra_functionality
         assert os.path.exists(source_path), f"{source_path} does not exist"
@@ -1422,8 +1688,10 @@ if __name__ == "__main__":
         )
     configure_logging(snakemake)
     set_scenario_config(snakemake)
+    options = snakemake.params.sector
+    config = snakemake.config
     update_config_from_wildcards(snakemake.config, snakemake.wildcards)
-
+    foresight=snakemake.params.foresight
     solve_opts = snakemake.params.solving["options"]
     cf_solving = snakemake.params.solving["options"]
 
@@ -1442,7 +1710,13 @@ if __name__ == "__main__":
         co2_sequestration_potential=snakemake.params["co2_sequestration_potential"],
         limit_max_growth=snakemake.params.get("sector", {}).get("limit_max_growth"),
     )
-
+    n = imposed_TYNDP(
+        n,
+        config=snakemake.config,
+        foresight=snakemake.params.foresight,)
+    
+    n = constraint_vre_capacities(
+        n,)
     # Determine solve mode
     rolling_horizon = cf_solving.get("rolling_horizon", False)
     skip_iterations = cf_solving.get("skip_iterations", False)

@@ -125,12 +125,6 @@ electricity:
     contingency: 4000
   max_hours:
     battery: 6
-    "li-ion": 6
-    lfp: 6
-    vanadium: 10
-    lair: 12
-    pair: 24
-    "iron-air": 100
     H2: 168
   extendable_carriers:
     Generator:
@@ -425,7 +419,6 @@ renewable:
 conventional:
   unit_commitment: false
   dynamic_fuel_price: false
-  fuel_price_rolling_window: 6
   nuclear:
     p_max_pu: data/nuclear_p_max_pu.csv
 
@@ -493,7 +486,7 @@ transformers:
 load:
   fill_gaps:
     enable: true
-    interpolate_limit: 6
+    interpolate_limit: 3
     time_shift_for_large_gaps: 1w
   manual_adjustments: true
   scaling_factor: 1.0
@@ -769,6 +762,9 @@ sector:
   agriculture_machinery_oil_share: 0.5
   agriculture_machinery_fuel_efficiency: 0.7
   agriculture_machinery_electric_efficiency: 0.3
+  MWh_MeOH_per_MWh_H2: 0.8787
+  MWh_MeOH_per_tCO2: 4.0321
+  MWh_MeOH_per_MWh_e: 3.6907
   shipping_hydrogen_liquefaction: false
   shipping_hydrogen_share:
     2020: 0
@@ -1085,8 +1081,7 @@ costs:
   emission_prices:
     enable: false
     co2: 0.0
-    dynamic: false
-    rolling_window: 90
+    co2_monthly_prices: false
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#clustering
 clustering:
@@ -1242,18 +1237,6 @@ solving:
       GPUMode: 1
       PDLPTol: 1.0e-05
       Crossover: 0
-    "xpress-default":
-      threads: 8
-      lpflags: 4
-      crossover: 0
-      bargaptarget: 1.0e-05
-      baralg: 2
-    "xpress-gpu":
-      lpflags: 4
-      crossover: 0
-      baralg: 4
-      barhggpu: 1
-      barhgreltol: 1.0e-05
     "cbc-default": {}
     "glpk-default": {}
   check_objective:
@@ -1280,17 +1263,8 @@ data:
   worldbank_urban_population:
     source: archive
     version: latest
-  worldbank_commodity_prices:
-    source: archive
-    version: latest
   gem_europe_gas_tracker:
     source: archive
-    version: latest
-  gem_gcct:
-    source: archive
-    version: latest
-  instrat_co2_prices:
-    source: primary
     version: latest
   co2stop:
     source: archive
@@ -1325,20 +1299,8 @@ data:
   scigrid_gas:
     source: primary
     version: latest
-  seawater_temperature:
-    source: archive
-    version: latest
   synthetic_electricity_demand:
     source: primary
-    version: latest
-  opsd_electricity_demand:
-    source: archive
-    version: latest
-  entsoe_electricity_demand:
-    source: archive
-    version: latest
-  neso_electricity_demand:
-    source: archive
     version: latest
   copernicus_land_cover:
     source: primary
@@ -1392,7 +1354,7 @@ data:
     source: archive
     version: latest
   powerplants:
-    source: archive
+    source: primary
     version: latest
   costs:
     source: primary
@@ -1427,12 +1389,6 @@ data:
   jrc_ardeco:
     source: archive
     version: latest
-  bidding_zones_electricitymaps:
-    source: archive
-    version: latest
-  bidding_zones_entsoepy:
-    source: archive
-    version: latest
 
 # docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#overpass_api
 overpass_api:
@@ -1443,3 +1399,7 @@ overpass_api:
     project_name: "PyPSA-Eur"
     email: "contact@pypsa.org"
     website: "https://github.com/PyPSA/pypsa-eur"
+
+# docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#secrets
+secrets:
+  corine: ""

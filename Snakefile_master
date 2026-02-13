@@ -1,0 +1,81 @@
+from snakemake.utils import min_version
+
+min_version("8.11")
+
+rule run_snakefile_reference:
+    output: touch("run_snakefile_reference.done")
+    log: "logs/run_snakefile_reference.done",
+    shell:
+        "snakemake --snakefile Snakefile_reference --cores 1 -call all"
+
+rule run_snakefile_flexible_solar:
+    input: "run_snakefile_reference.done"
+    output: touch("run_snakefile_flexible_solar.done")
+    log: "logs/run_snakefile_flexible_solar.done",
+    shell:
+        "snakemake --snakefile Snakefile_flexible_solar --cores 1 -call all"
+
+rule run_snakefile_flexible_onwind:
+    input: "run_snakefile_flexible_solar.done"
+    output: touch("run_snakefile_flexible_onwind.done")
+    log: "logs/run_snakefile_flexible_onwind.done",
+    shell:
+        "snakemake --snakefile Snakefile_flexible_onwind --cores 1 -call all"
+
+rule run_snakefile_flexible_offwind:
+    input: "run_snakefile_flexible_onwind.done"
+    output: touch("run_snakefile_flexible_offwind.done")
+    log: "logs/run_snakefile_flexible_offwind.done",
+    shell:
+        "snakemake --snakefile Snakefile_flexible_offwind --cores 1 -call all"
+
+rule run_snakefile_flexible_vre:
+    input: "run_snakefile_flexible_offwind.done"
+    output: touch("run_snakefile_flexible_vre.done")
+    log: "logs/run_snakefile_flexible_vre.done",
+    shell:
+        "snakemake --snakefile Snakefile_flexible_vre --cores 1 -call all"
+        
+rule run_snakefile_flexible_nuclear:
+    input: "run_snakefile_flexible_vre.done"
+    output: touch("run_snakefile_flexible_nuclear.done")
+    log: "logs/run_snakefile_flexible_nuclear.done",
+    shell:
+        "snakemake --snakefile Snakefile_flexible_nuclear --cores 1 -call all"
+
+rule run_all_snakefiles:
+    input: "run_snakefile_flexible_nuclear.done"
+    
+
+configfile: 'config/config_reference.yaml'
+configfile: "config/plotting.default.yaml"
+
+local_countries = config["countries"].copy()
+if "EU" not in local_countries:
+    local_countries.append("EU") 
+rule prepare_scenarios:
+    params:
+        countries = config["countries"],
+        plotting=config["plotting"],
+    input:
+        "run_snakefile_flexible_nuclear.done",
+        sepia_config = "SEPIA/SEPIA_config.xlsx",
+        template = "SEPIA/Template/pypsa.html",
+        plots_html = "config/plots.yaml", 
+        
+    output:
+        htmlfile=expand("results/scenario_results/{country}_combined_scenario_chart.html", country=local_countries),
+    threads: 1
+    resources:
+        mem_mb=10000,
+    log:
+        "logs/scenario_results.log",
+    benchmark:
+        "benchmarks/scenario_results",
+    conda:
+        "envs/environment.yaml"
+    script:
+        "SEPIA/scenario_results.py"
+        
+rule run_all_scenarios:
+    input: "run_prepare_scenarios.done"
