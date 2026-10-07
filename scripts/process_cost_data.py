@@ -2,27 +2,15 @@
 #
 # SPDX-License-Identifier: MIT
 """
-Prepare and extend default cost data with custom cost modifications. Custom costs can target all planning horizons
-and / or technologies using the 'all' identifier.
+Prepares the technology cost table of one planning horizon for the model.
 
-Preparing the cost data includes:
-- aligning all units to conventional units (i.e. MW / MWh),
-- filling in missing data,
-- computing 'capital_cost' parameter (annualised investment costs and FOM),
-- computing 'marginal_cost' parameter (fuel costs and VOM),
-- computing storage costs for batteries and hydrogen,
-- (deprecated) overwriting attributes using config-based modifications.
-
-Inputs
-------
-
-- ``resources/costs_{planning_horizons}.csv``: Default cost data for specified planning horizon
-- (by default) ``data/custom_costs.csv``: Custom cost modifications (can be configured with `costs:custom_costs:file`
-
-Outputs
--------
-
-- ``resources/costs_{planning_horizons}_processed.csv``: Prepared cost data with custom modifications applied
+Units are aligned to MW and MWh, missing values are filled with defaults, the
+annualised `capital_cost` (investment annuity plus fixed operation and
+maintenance) and the `marginal_cost` (fuel plus variable operation and
+maintenance) are computed, and combined storage costs for batteries and
+hydrogen are derived. Custom cost modifications from the configuration can
+target single technologies and horizons or all of them with the `all`
+identifier.
 """
 
 import logging
@@ -31,7 +19,7 @@ import warnings
 import pandas as pd
 import pypsa
 
-from scripts.add_electricity import calculate_annuity
+from scripts.add_electricity import STORE_LOOKUP, calculate_annuity
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +67,7 @@ def overwrite_costs(costs: pd.DataFrame, custom_costs: pd.DataFrame) -> pd.DataF
 def prepare_costs(
     costs: pd.DataFrame,
     config: dict,
+    cost_year: str,
     max_hours: dict = None,
     nyears: float = 1.0,
     custom_costs_fn: str = None,
@@ -92,6 +81,8 @@ def prepare_costs(
         DataFrame containing extended costs
     config : dict
         Dictionary containing cost-related configuration parameters
+    cost_year : str
+        Year of the cost assumptions, used to select custom cost entries
     max_hours : dict, optional
         Dictionary specifying maximum hours for storage technologies
     nyears : float, optional
@@ -105,19 +96,32 @@ def prepare_costs(
         DataFrame containing the prepared cost data
 
     """
+
+    def _convert_to_MW(cost_df: pd.DataFrame) -> pd.DataFrame:
+        # correct units to MW and EUR
+        cost_df.loc[cost_df.unit.str.contains("/kW"), "value"] *= 1e3
+        cost_df.loc[cost_df.unit.str.contains("/GW"), "value"] /= 1e3
+
+        cost_df.unit = cost_df.unit.str.replace("/kW", "/MW")
+        cost_df.unit = cost_df.unit.str.replace("/GW", "/MW")
+        return cost_df
+
     # Load custom costs and categorize into two sets:
     # - Raw attributes: overwritten before cost preparation
     # - Prepared attributes: overwritten after cost preparation
     if custom_costs_fn is not None:
         custom_costs = pd.read_csv(
-            snakemake.input.custom_costs,
+            custom_costs_fn,
             dtype={"planning_horizon": "str"},
             index_col=["technology", "parameter"],
-        ).query("planning_horizon in [@planning_horizon, 'all']")
+        ).query("planning_horizon in [@cost_year, 'all']")
+
+        custom_costs = _convert_to_MW(custom_costs)
 
         custom_costs = custom_costs.drop("planning_horizon", axis=1).value.unstack(
             level=1
         )
+
         prepared_attrs = ["marginal_cost", "capital_cost"]
         raw_attrs = list(set(custom_costs.columns) - set(prepared_attrs))
         custom_raw = custom_costs[raw_attrs].dropna(axis=0, how="all")
@@ -128,12 +132,7 @@ def prepare_costs(
         if key in config:
             config["overwrites"][key] = config[key]
 
-    # correct units to MW and EUR
-    costs.loc[costs.unit.str.contains("/kW"), "value"] *= 1e3
-    costs.loc[costs.unit.str.contains("/GW"), "value"] /= 1e3
-
-    costs.unit = costs.unit.str.replace("/kW", "/MW")
-    costs.unit = costs.unit.str.replace("/GW", "/MW")
+    costs = _convert_to_MW(costs)
 
     # min_count=1 is important to generate NaNs which are then filled by fillna
     costs = costs.value.unstack(level=1).groupby("technology").sum(min_count=1)
@@ -164,6 +163,9 @@ def prepare_costs(
     annuity_factor_fom = annuity_factor + costs["FOM"] / 100.0
     costs["capital_cost"] = annuity_factor_fom * costs["investment"] * nyears
 
+    costs.loc["waste"] = costs.loc["waste CHP"]
+    costs.at["waste", "CO2 intensity"] = costs.at["oil", "CO2 intensity"]
+
     costs.at["OCGT", "fuel"] = costs.at["gas", "fuel"]
     costs.at["CCGT", "fuel"] = costs.at["gas", "fuel"]
 
@@ -180,8 +182,12 @@ def prepare_costs(
     # Calculate storage costs if max_hours is provided
     if max_hours is not None:
 
-        def costs_for_storage(store, link1, link2=None, max_hours=1.0):
-            capital_cost = link1["capital_cost"] + max_hours * store["capital_cost"]
+        def costs_for_storage(store=None, link1=None, link2=None, max_hours=1.0):
+            capital_cost = 0
+            if store is not None:
+                capital_cost += max_hours * store["capital_cost"]
+            if link1 is not None:
+                capital_cost += link1["capital_cost"]
             if link2 is not None:
                 capital_cost += link2["capital_cost"]
             return pd.Series(
@@ -193,17 +199,30 @@ def prepare_costs(
                 }
             )
 
-        costs.loc["battery"] = costs_for_storage(
-            costs.loc["battery storage"],
-            costs.loc["battery inverter"],
-            max_hours=max_hours["battery"],
-        )
-        costs.loc["H2"] = costs_for_storage(
-            costs.loc["hydrogen storage underground"],
-            costs.loc["fuel cell"],
-            costs.loc["electrolysis"],
-            max_hours=max_hours["H2"],
-        )
+        costs_i = costs.index
+        for k, v in max_hours.items():
+            tech = STORE_LOOKUP[k]
+            store = tech.get("store") if tech.get("store") in costs_i else None
+            bicharger = (
+                tech.get("bicharger") if tech.get("bicharger") in costs_i else None
+            )
+            charger = tech.get("charger") if tech.get("charger") in costs_i else None
+            discharger = (
+                tech.get("discharger") if tech.get("discharger") in costs_i else None
+            )
+            if bicharger:
+                costs.loc[k] = costs_for_storage(
+                    costs.loc[store],
+                    costs.loc[bicharger],
+                    max_hours=v,
+                )
+            elif store:
+                costs.loc[k] = costs_for_storage(
+                    costs.loc[store],
+                    costs.loc[charger] if charger else None,
+                    costs.loc[discharger] if discharger else None,
+                    max_hours=v,
+                )
 
     # Overwrite marginal and capital costs
     costs = overwrite_costs(costs, custom_prepared)
@@ -226,13 +245,13 @@ if __name__ == "__main__":
     if "snakemake" not in globals():
         from _helpers import mock_snakemake
 
-        snakemake = mock_snakemake("process_cost_data", planning_horizons=2030)
+        snakemake = mock_snakemake("process_cost_data", horizon=2030)
 
     cost_params = snakemake.params["costs"]
 
     n = pypsa.Network(snakemake.input.network)
     nyears = n.snapshot_weightings.generators.sum() / 8760.0
-    planning_horizon = str(snakemake.wildcards.planning_horizons)
+    cost_year = str(snakemake.params.cost_year)
 
     # Retrieve costs assumptions
     costs = pd.read_csv(snakemake.input.costs, index_col=["technology", "parameter"])
@@ -241,6 +260,7 @@ if __name__ == "__main__":
     costs_processed = prepare_costs(
         costs,
         cost_params,
+        cost_year,
         snakemake.params.max_hours,
         nyears,
         snakemake.input.custom_costs,

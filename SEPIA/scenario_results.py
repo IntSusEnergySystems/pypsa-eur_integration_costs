@@ -17,12 +17,12 @@ import pypsa
 from functools import lru_cache
 
 paths = {
-    "variable": "results/reference/networks/base_s_6___{year}.nc",
-    "solar": "results/flexible_solar/networks/base_s_6___{year}.nc",
-    "onwind": "results/flexible_onwind/networks/base_s_6___{year}.nc",
-    "offwind": "results/flexible_offshore/networks/base_s_6___{year}.nc",
-    "vre": "results/flexible_vre/networks/base_s_6___{year}.nc",
-    "nuclear": "results/flexible_nuclear/networks/base_s_6___{year}.nc",
+    "variable": "results/reference/networks/solved_{year}.nc",
+    "solar": "results/flexible_solar/networks/solved_{year}.nc",
+    "onwind": "results/flexible_onwind/networks/solved_{year}.nc",
+    "offwind": "results/flexible_offshore/networks/solved_{year}.nc",
+    "vre": "results/flexible_vre/networks/solved_{year}.nc",
+    "nuclear": "results/flexible_nuclear/networks/solved_{year}.nc",
 }
 
 @lru_cache(maxsize=None)
@@ -486,7 +486,7 @@ def integration_costs(country):
 )
 
     # Y-axis formatting + range
-    fig.update_yaxes(title_text="Integration Costs [Eur/MWh]", range=[-20, 120])
+    fig.update_yaxes(title_text="Integration Costs [€/MWh]", range=[-20, 120])
 
     # Make gridlines visible
     fig.update_yaxes(showgrid=True, gridwidth=0.7, gridcolor="lightgray")
@@ -629,10 +629,17 @@ def penetration_level(country):
      fig.update_yaxes(
         showgrid=True,
         gridcolor="lightgray",
-        title_text="Integration Cost [EUR/MWh]",
         row=1,
         col=i,
     )
+     fig.update_yaxes(
+        showgrid=True,
+        gridcolor="lightgray",
+        title_text="Integration Cost [€/MWh]" if i == 1 else "",
+        row=1,
+        col=i,
+    )
+
     fig.update_layout(
     template="simple_white",
     width=1200,
@@ -696,15 +703,15 @@ def dispatch(country):
     vertical_spacing=0.04,
     horizontal_spacing=0.06,
     subplot_titles = [
-    "Solar (2050)", "", "",  
+    "Solar", "", "",  
     "Winter week", "Summer week","",
-    "Onwind (2050)", "", "",  
+    "Onwind", "", "",  
     "Winter week", "Summer week","",
-    "Offwind (2050)", "", "",  
+    "Offwind", "", "",  
     "Winter week", "Summer week","",
-    "VRE (2050)", "", "",  
+    "VRE", "", "",  
     "Winter week", "Summer week","",
-    "Nuclear (2050)", "", "",  
+    "Nuclear", "", "",  
     "Winter week", "Summer week","",
 ]
 )
@@ -821,11 +828,13 @@ def dispatch(country):
     font=dict(size=12),
 )
 
-    fig.update_yaxes(
-    title_text="GW",
-    row=1,
-    col=1,
-)
+    for r in range(1, 11):
+     for c in [1, 2]:
+        fig.update_yaxes(
+            title_text="GW",
+            row=r,
+            col=c,
+        )
     return fig
 
 def valcoe(country):
@@ -833,14 +842,13 @@ def valcoe(country):
     valcoe_dict = {}   
     lcoe_dict = {}                
     for planning_horizon in planning_horizons:
-      n=pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")
+      n=pypsa.Network(f"results/reference/networks/solved_{planning_horizon}.nc")
       if country == 'EU':
         prices_marginal = n.buses_t.marginal_price.loc[:, n.buses.carrier == "AC"]
-        prices_marginal = prices_marginal.sum(axis=0)/8760
-        prices_marginal = prices_marginal.sum()/6
-        
+        prices_marginal = prices_marginal.mean(axis=0).mean()
+
         wholesale_prices = n.buses_t.marginal_price.loc[:, n.buses.carrier == "AC"]
-        wholesale_prices = wholesale_prices.sum(axis=1)/6
+        wholesale_prices = wholesale_prices.mean(axis=1)
         
         generation_solar = n.generators_t.p.filter(like="solar")
         generation_solar = generation_solar.drop(columns=[col for col in generation_solar.columns if "thermal collector" in col])
@@ -874,11 +882,11 @@ def valcoe(country):
         opt_nuc = n.generators.p_nom_opt.filter(like="nuclear")
         opt_nuc = opt_nuc.groupby(opt_nuc.index).sum().sum()
       else:
-        prices_marginal = n.buses_t.marginal_price.filter(like=country).loc[:, n.buses.carrier == "AC"]
-        prices_marginal = prices_marginal.sum(axis=0).sum()/8760
-        
-        wholesale_prices = n.buses_t.marginal_price.filter(like=country).loc[:, n.buses.carrier == "AC"]
-        wholesale_prices = wholesale_prices.sum(axis=1)
+        ac_prices = n.buses_t.marginal_price.loc[:, n.buses.carrier == "AC"]
+        ac_prices = ac_prices.loc[:, ac_prices.columns.astype(str).str[:2] == country]
+        prices_marginal = ac_prices.mean(axis=0).mean() if not ac_prices.empty else 0.0
+
+        wholesale_prices = ac_prices.mean(axis=1) if not ac_prices.empty else pd.Series(0.0, index=n.snapshots)
         generation_solar = n.generators_t.p.filter(like=country).filter(like="solar")
         generation_solar = generation_solar.drop(columns=[col for col in generation_solar.columns if "thermal collector" in col])
         generation_solar = generation_solar.sum(axis=1)
@@ -1014,58 +1022,184 @@ def valcoe(country):
     "offwind": "#6895dd",
     "nuclear": "#ff8c00",
 } 
-    fig = make_subplots(rows=2, cols=2, subplot_titles=[t.capitalize() for t in technologies],shared_yaxes=True)
+    fig = make_subplots(
+    rows=2,
+    cols=2,
+    subplot_titles=[t.capitalize() for t in technologies],
+    shared_yaxes=True,
+    horizontal_spacing=0.10,
+    vertical_spacing=0.18,
+)
 
     for i, tech in enumerate(technologies):
-      row = i // 2 + 1
-      col = i % 2 + 1
 
-      lcoe_vals = [lcoe_dict[y][tech] for y in planning_horizons]
-      valcoe_vals = [valcoe_dict[y][tech] for y in planning_horizons]
-      adjusted_lcoe_vals = [lcoe_dict[y][tech] + inti_data[tech][j] for j, y in enumerate(planning_horizons)]
+     row = i // 2 + 1
+     col = i % 2 + 1
 
-      # Original LCOE
-      fig.add_trace(
+     lcoe_vals = [
+        lcoe_dict[y][tech]
+        for y in planning_horizons
+    ]
+
+     valcoe_vals = [
+        valcoe_dict[y][tech]
+        for y in planning_horizons
+    ]
+
+     integration_cost_vals = [
+        inti_data[tech][j]
+        for j, y in enumerate(planning_horizons)
+    ]
+
+     adjusted_lcoe_vals = [
+        lcoe_dict[y][tech] + inti_data[tech][j]
+        for j, y in enumerate(planning_horizons)
+    ]
+     x_str = [str(y) for y in planning_horizons]
+
+    # --------------------------------------------------
+    # 1. LCOE
+    # --------------------------------------------------
+     fig.add_trace(
         go.Bar(
-            x=planning_horizons,
+            x=x_str,
             y=lcoe_vals,
             name="LCOE",
-            marker=dict(color=colors[tech])
+            legendgroup="LCOE",
+            showlegend=False,
+            offsetgroup="1",
+            marker=dict(
+                color=colors[tech],
+                pattern=dict(shape="")
+            ),
+
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "LCOE: %{y:.1f} €/MWh"
+                "<extra></extra>"
+            ),
         ),
         row=row,
-        col=col
+        col=col,
     )
 
-    # Adjusted LCOE with pattern
-      fig.add_trace(
+    # --------------------------------------------------
+    # 2. LCOE + integration cost
+    # --------------------------------------------------
+     fig.add_trace(
         go.Bar(
-            x=planning_horizons,
+            x=x_str,
             y=adjusted_lcoe_vals,
-            name="Adjusted LCOE",
-            marker=dict(color=colors[tech], pattern=dict(shape="/"))
+            name="LCOE + Integration Costs",
+            legendgroup="Integration",
+            showlegend=False,
+            offsetgroup="2",
+            marker=dict(
+                color=colors[tech],
+                pattern=dict(
+                    shape="/",
+                    fgcolor="white",
+                    bgcolor=colors[tech],
+                    solidity=0.25,
+                ),
+            ),
+
+            customdata=integration_cost_vals,
+
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "LCOE + integration cost: %{y:.1f} €/MWh"
+                "<br>Integration cost: %{customdata:.1f} €/MWh"
+                "<extra></extra>"
+            ),
         ),
         row=row,
-        col=col
+        col=col,
     )
 
-    # VALCOE with a different pattern
-      fig.add_trace(
+    # --------------------------------------------------
+    # 3. VALCOE
+    # --------------------------------------------------
+     fig.add_trace(
         go.Bar(
-            x=planning_horizons,
+            x=x_str,
             y=valcoe_vals,
             name="VALCOE",
-            marker=dict(color=colors[tech], pattern=dict(shape="\\"))
+            legendgroup="VALCOE",
+            showlegend=False,
+            offsetgroup="3",
+            marker=dict(
+                color=colors[tech],
+                pattern=dict(
+                    shape="+",
+                    fgcolor="white",
+                    bgcolor=colors[tech],
+                    solidity=0.25,
+                ),
+            ),
+
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "VALCOE: %{y:.1f} €/MWh"
+                "<extra></extra>"
+            ),
         ),
         row=row,
-        col=col
+        col=col,
+    )
+
+
+# ======================================================
+# GENERAL LAYOUT
+# ======================================================
+    legend_items = [
+    ("LCOE", "", "1"),
+    ("LCOE + Integration Costs", "/", "2"),
+    ("VALCOE", "+", "3"),
+]
+
+    for name, pattern_shape, offset_id in legend_items:
+     fig.add_trace(
+        go.Bar(
+            x=[None],
+            y=[None],
+            name=name,
+            legendgroup=name,
+            showlegend=True,
+            offsetgroup=offset_id,
+            marker=dict(
+                color="white",
+                line=dict(color="black", width=1),
+                pattern=dict(
+                    shape=pattern_shape,
+                    fgcolor="black",
+                    bgcolor="white",
+                ),
+            ),
+        )
     )
     fig.update_layout(
-    barmode="group",
-    height=800,
-    width=1200,
     template="plotly_white",
-    yaxis_title="EUR/MWh",
+    barmode="group",
+    height=750,
+    width=1100,
+    bargap=0.3,        # Gap between year groups
+    bargroupgap=0.05,  # Gap between individual bars in a group
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=1,
+        xanchor="left",
+        x=1.02,
+        title=None,
+    ),
+    margin=dict(l=70, r=30, t=90, b=60),
 )
+    fig.update_xaxes(type="category")
+    fig.update_yaxes(range=[0, 200], dtick=25, showgrid=True, gridcolor="lightgray")
+    fig.update_yaxes(title_text="€/MWh", row=1, col=1)
+    fig.update_yaxes(title_text="€/MWh", row=2, col=1)
+    # fig.update_traces(selector=dict(x=[None]), showlegend=True)
     return fig
 
 def total_comparison(country):
@@ -1238,7 +1372,7 @@ def total_comparison(country):
     lcoe_dict = {} 
     planning_horizons = [2030, 2040, 2050]               
     for planning_horizon in planning_horizons:
-      n=pypsa.Network(f"results/reference/networks/base_s_6___{planning_horizon}.nc")
+      n=pypsa.Network(f"results/reference/networks/solved_{planning_horizon}.nc")
       if country == 'EU':
         generation_solar = n.generators_t.p.filter(like="solar")
         generation_solar = generation_solar.drop(columns=[col for col in generation_solar.columns if "thermal collector" in col])
@@ -1370,7 +1504,7 @@ def total_comparison(country):
                     "Grid Investments",
                     "Storage Investments",
                     "Other Investments",
-                    "Adjusted LCOE"
+                    "LCOE + Integration Costs"
                 ],
                 y=[
                     base_lcoe,
@@ -1391,8 +1525,18 @@ def total_comparison(country):
     height=300 * len(years),
     template="plotly_white"
 )
-
-    fig.update_yaxes(title="€/MWh")
+    fig.update_yaxes(
+    range=[0, 200],
+    dtick=25,
+    showgrid=True,
+    gridcolor="lightgray",
+)
+    for row in range(1, len(years) + 1):
+     fig.update_yaxes(
+        title_text="€/MWh",
+        row=row,
+        col=1
+    )
     
     return fig
 def create_combined_scenario_chart_country(country, output_folder='results/scenario_results/'):
@@ -1467,7 +1611,7 @@ def create_combined_scenario_chart_country(country, output_folder='results/scena
     if scenario_plots["Valcoe"] == True:
      table_of_contents_content += f"<a href='#{country} - VALCOE Comparison'>VALCOE Comparison</a><br>"
     if scenario_plots["Waterfall"] == True:
-     table_of_contents_content += f"<a href='#{country} - Total Comparison'>VALCOE Comparison</a><br>"
+     table_of_contents_content += f"<a href='#{country} - Total Comparison'>Waterfall Charts</a><br>"
     # Add more links for other plots
     if scenario_plots["Annual Costs"] == True:
      main_content += f"<div id='{country} - Annual Costs'><h2>{country} - Annual Costs</h2>{bar_chart.to_html(full_html=False, include_plotlyjs='cdn')}</div>"

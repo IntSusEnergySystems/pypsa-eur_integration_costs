@@ -2,14 +2,8 @@ import pandas as pd  # Read/analyse data
 import pypsa
 from pypsa.descriptors import get_switchable_as_dense as as_dense
     
-def build_filename(cluster,opt,sector_opt ,planning_horizon):
-    prefix=f"results/{study}/networks/base_"
-    return prefix+"s_{cluster}_{opt}_{sector_opt}_{planning_horizon}.nc".format(
-        cluster=cluster,
-        opt=opt,
-        sector_opt=sector_opt,
-        planning_horizon=planning_horizon
-    )
+def build_filename(cluster, opt, sector_opt, planning_horizon):
+    return f"results/{study}/networks/solved_{planning_horizon}.nc"
 def load_file(filename):
     # Use pypsa.Network to load the network from the filename
     return pypsa.Network(filename)
@@ -32,8 +26,9 @@ def process_network(cluster, opt, sector_opt, planning_horizon, country):
             index_col=0)
 
         industry_demand = pd.read_csv(
-            f"resources/{study}/industrial_energy_demand_base_s_" + str(cluster) + "_" + str(
-                planning_horizon) + ".csv", index_col=0).T
+            f"resources/{study}/industrial_energy_demand_{planning_horizon}.csv",
+            index_col=0,
+        ).T
         Rail_demand = energy_demand.loc[(energy_demand['year'] == year),'total rail']
         if country != 'EU':
          Rail_demand = Rail_demand[country].sum()
@@ -646,24 +641,6 @@ def prepare_emissions(cluster, opt, sector_opt,planning_horizon, country):
         )
 
         # process emissions CC
-        if country == 'EU':
-            value = -(
-                n.snapshot_weightings.generators @ n.links_t.p1.filter(regex="process emissions CC")
-                ).sum()
-        else:
-            value = -(
-                    n.snapshot_weightings.generators @ n.links_t.p1.filter(regex="process emissions CC")
-                    .filter(like=country)).sum()
-        collection.append(
-            pd.Series(
-                dict(
-                    label="process emissions CC",
-                    source="process emissions",
-                    target="co2 atmosphere",
-                    value=value,
-                )
-            )
-        )
         if country == 'EU':
             value = -(
                 n.snapshot_weightings.generators @ n.links_t.p2.filter(regex="process emissions CC")
@@ -1590,7 +1567,7 @@ def prepare_emissions(cluster, opt, sector_opt,planning_horizon, country):
 
 
 # %%
-entries_to_select_c = ['process emissions', 'process emissions CC', 'process emissions CC_2', 'CCGT', 'lignite',
+entries_to_select_c = ['process emissions', 'process emissions CC', 'CCGT', 'lignite',
                        'SMR CC', 'SMR CC_2',
                        'rural gas boiler','oil refining emissions',
                        'urban decentral gas boiler',
@@ -1622,8 +1599,8 @@ entries_to_select_c = ['process emissions', 'process emissions CC', 'process emi
 
 entry_label_mapping_c = {
     'process emissions': {'label': 'process emissions', 'source': 'MtCO2', 'target': 'emmprocess'},
-    'process emissions CC': {'label': 'process emissions CC', 'source': 'MtCO2', 'target': 'emmprocesscc'},
-    'process emissions CC_2': {'label': 'process emissions CC', 'source': 'MtCO2', 'target': 'emmprocessccst'},
+    'process emissions CC': {'label': 'process emissions CC', 'source': 'MtCO2', 'target': 'emmprocessccst'},
+    # 'process emissions CC_2': {'label': 'process emissions CC', 'source': 'MtCO2', 'target': 'emmprocessccst'},
     'CCGT': {'label': 'CCGT emissions', 'source': 'MtCO2', 'target': 'emmccgt'},
     'OCGT': {'label': 'OCGT emissions', 'source': 'MtCO2', 'target': 'emmocgt'},
     'lignite': {'label': 'lignite emissions', 'source': 'MtCO2', 'target': 'emmlig'},
@@ -1854,10 +1831,10 @@ if __name__ == "__main__":
 
         
 
-    cluster = snakemake.params.scenario["clusters"][0]
-    opt = snakemake.params.scenario["opts"][0]
-    sector_opt = snakemake.params.scenario["sector_opts"][0]
-    planning_horizons = [2030, 2040, 2050] 
+    cluster = ""
+    opt = ""
+    sector_opt = ""
+    planning_horizons = list(snakemake.params.planning_horizons) 
 
     countries = snakemake.params.countries
     total_country = 'EU'
@@ -1871,16 +1848,17 @@ if __name__ == "__main__":
     loaded_files = load_files(study, planning_horizons, cluster, opt, sector_opt)
     
     networks_dict = {
-            (cluster, opt + sector_opt, planning_horizon): f"results/{study}" +
-            f"/networks/base_s_{cluster}_{opt}_{sector_opt}_{planning_horizon}.nc"
+            (cluster, opt + sector_opt, planning_horizon): (
+                f"results/{study}/networks/solved_{planning_horizon}.nc"
+            )
             for planning_horizon in planning_horizons
         }
 
         
     write_to_excel(
-            snakemake.params.scenario["clusters"][0],
-            snakemake.params.scenario["opts"][0],
-            snakemake.params.scenario["sector_opts"][0],
+            cluster,
+            opt,
+            sector_opt,
             snakemake.params.planning_horizons,
             countries,
             filename=snakemake.output.excelfile,

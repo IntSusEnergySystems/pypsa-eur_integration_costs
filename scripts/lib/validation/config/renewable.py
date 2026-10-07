@@ -5,7 +5,7 @@
 """
 Renewable energy configuration.
 
-See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#renewable
+See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration/#renewable_cf
 """
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -85,7 +85,7 @@ class _OnwindConfig(BaseModel):
     correction_factor: float = Field(
         1.0, description="Correction factor for capacity factor time series."
     )
-    corine: _CorineConfig = Field(
+    corine: bool | _CorineConfig = Field(
         default_factory=lambda: _CorineConfig(
             grid_codes=[
                 12,
@@ -150,8 +150,8 @@ class _OffwindConfig(BaseModel):
     correction_factor: float = Field(
         0.8855, description="Correction factor for capacity factor time series."
     )
-    corine: list[int] = Field(
-        default_factory=lambda: [44, 255],
+    corine: bool | list[int] = Field(
+        default=False,
         description="Specifies areas according to CORINE Land Cover codes which are generally eligible for AC-connected offshore wind turbine placement.",
     )
     luisa: bool | list[int] = Field(
@@ -212,7 +212,7 @@ class _SolarConfig(BaseModel):
         1.0,
         description="A correction factor for the capacity factor (availability) time series.",
     )
-    corine: list[int] = Field(
+    corine: bool | list[int] = Field(
         default_factory=lambda: [
             1,
             2,
@@ -270,11 +270,11 @@ class _HydroConfig(BaseModel):
     )
     PHS_max_hours: float = Field(
         6,
-        description="Maximum state of charge capacity of the pumped-hydro storage (PHS) in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://pypsa.readthedocs.io/en/latest/components.html#storage-unit>`_.",
+        description="Maximum state of charge capacity of the pumped-hydro storage (PHS) in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
     )
     hydro_max_hours: str | float = Field(
         "energy_capacity_totals_by_country",
-        description="Maximum state of charge capacity of the pumped-hydro storage (PHS) in terms of hours at full output capacity `p_nom` or heuristically determined. Cf. `PyPSA documentation <https://pypsa.readthedocs.io/en/latest/components.html#storage-unit>`_.",
+        description="Maximum state of charge capacity of the pumped-hydro storage (PHS) in terms of hours at full output capacity `p_nom` or heuristically determined. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
     )
     flatten_dispatch: bool = Field(
         False,

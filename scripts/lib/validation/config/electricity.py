@@ -5,7 +5,7 @@
 """
 Electricity configuration.
 
-See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#electricity
+See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration/#electricity_cf
 """
 
 from typing import Literal
@@ -41,11 +41,37 @@ class _MaxHoursConfig(BaseModel):
 
     battery: float = Field(
         6,
-        description="Maximum state of charge capacity of the battery in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://pypsa.readthedocs.io/en/latest/components.html#storage-unit>`_.",
+        description="Maximum state of charge capacity of the battery in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+    )
+    li_ion: float = Field(
+        6,
+        description="Maximum state of charge capacity of the lithium-ion storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+        alias="li-ion",
+    )
+    lfp: float = Field(
+        6,
+        description="Maximum state of charge capacity of the lithium-ion-LFP storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+    )
+    vanadium: float = Field(
+        10,
+        description="Maximum state of charge capacity of the vanadium-redox-flow storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+    )
+    lair: float = Field(
+        12,
+        description="Maximum state of charge capacity of the liquid-air storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+    )
+    pair: float = Field(
+        24,
+        description="Maximum state of charge capacity of the compressed-air-adiabatic storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
+    )
+    iron_air: float = Field(
+        100,
+        description="Hours the iron-air storage sustains its full output capacity `p_nom`, i.e. hours of dispatched energy, rather than the state of charge in hours taken by the other storage technologies (cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_). The store is sized by dividing by the discharge efficiency, matching how duration and cost per kWh are quoted for iron-air.",
+        alias="iron-air",
     )
     H2: float = Field(
         168,
-        description="Maximum state of charge capacity of the hydrogen storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://pypsa.readthedocs.io/en/latest/components.html#storage-unit>`_.",
+        description="Maximum state of charge capacity of the hydrogen storage in terms of hours at full output capacity `p_nom`. Cf. `PyPSA documentation <https://docs.pypsa.org/latest/user-guide/components/storage-units/>`_.",
     )
 
 
@@ -67,11 +93,11 @@ class _ExtendableCarriersConfig(BaseModel):
     )
     StorageUnit: list[str] = Field(
         default_factory=list,
-        description="Adds extendable storage units (battery and/or hydrogen) at every node/bus after clustering without capacity limits and with zero initial capacity.",
+        description="Adds extendable storage units at every node/bus after clustering without capacity limits and with zero initial capacity. Supported technologies include battery, H2, li-ion, vanadium, lfp, lair, pair, and iron-air.",
     )
     Store: list[str] = Field(
         default_factory=lambda: ["battery", "H2"],
-        description="Adds extendable storage units (battery and/or hydrogen) at every node/bus after clustering without capacity limits and with zero initial capacity.",
+        description="Adds extendable storage units at every node/bus after clustering without capacity limits and with zero initial capacity. Supported technologies include battery, H2, li-ion, vanadium, lfp, lair, pair, and iron-air.",
     )
     Link: list[str] = Field(
         default_factory=list,
@@ -103,12 +129,16 @@ class _EstimateRenewableCapacitiesConfig(BaseModel):
         True,
         description="Activate routine to estimate renewable capacities in rule `add_electricity`. This option should not be used in combination with pathway planning `foresight: myopic` or `foresight: perfect` as renewable capacities are added differently in `add_existing_baseyear`.",
     )
-    from_gem: bool = Field(
+    from_powerplantmatching: bool = Field(
         True,
-        description="Add renewable capacities from `Global Energy Monitor's Global Solar Power Tracker <https://globalenergymonitor.org/projects/global-solar-power-tracker/>`_ and `Global Energy Monitor's Global Wind Power Tracker <https://globalenergymonitor.org/projects/global-wind-power-tracker/>`_.",
+        description="Add renewable capacities from powerplantmatching dataset.",
+    )
+    from_irenastat: bool = Field(
+        False,
+        description="Supplement powerplantmatching dataset with heuristics based on country-level renewable capacities from IRENA (IRENASTAT).",
     )
     year: int = Field(
-        2020,
+        2024,
         description="Renewable capacities are based on existing capacities reported by IRENA (IRENASTAT) for the specified year.",
     )
     expansion_limit: float | bool = Field(
@@ -153,21 +183,9 @@ class ElectricityConfig(BaseModel):
         False,
         description="Global gas usage limit.",
     )
-    co2limit_enable: bool = Field(
-        False,
-        description="Add an overall absolute carbon-dioxide emissions limit configured in `electricity: co2limit` in `prepare_network`. **Warning:** This option should currently only be used with electricity-only networks, not for sector-coupled networks.",
-    )
-    co2limit: float = Field(
-        7.75e7,
-        description="Cap on total annual system carbon dioxide emissions.",
-    )
-    co2base: float = Field(
-        1.487e9,
-        description="Reference value of total annual system carbon dioxide emissions if relative emission reduction target is specified in `{opts}` wildcard.",
-    )
     operational_reserve: _OperationalReserveConfig = Field(
         default_factory=_OperationalReserveConfig,
-        description="Settings for reserve requirements following `GenX <https://genxproject.github.io/GenX/dev/core/#Reserves>`_.",
+        description="Settings for reserve requirements following `GenX <https://genxproject.github.io/GenX.jl/stable/Model_Reference/core/>`_.",
     )
     max_hours: _MaxHoursConfig = Field(
         default_factory=_MaxHoursConfig,
@@ -178,7 +196,7 @@ class ElectricityConfig(BaseModel):
         description="Defines which carriers are extendable during optimization.",
     )
     powerplants_filter: str | bool = Field(
-        "(DateOut >= 2024 or DateOut != DateOut) and not (Country == 'Germany' and Fueltype == 'Nuclear')",
+        "(DateOut > 2025 or DateOut != DateOut) and (DateIn < 2026 or DateIn != DateIn)",
         description="Filter query for the default powerplant database.",
     )
     custom_powerplants: str | bool = Field(
@@ -198,9 +216,10 @@ class ElectricityConfig(BaseModel):
             "coal",
             "lignite",
             "geothermal",
+            "waste",
             "biomass",
         ],
-        description="List of conventional power plants to include in the model from `resources/powerplants_s_{clusters}.csv`. If an included carrier is also listed in `extendable_carriers`, the capacity is taken as a lower bound.",
+        description="List of conventional power plants to include in the model from `resources/powerplants.csv`. If an included carrier is also listed in `extendable_carriers`, the capacity is taken as a lower bound.",
     )
     renewable_carriers: list[str] = Field(
         default_factory=lambda: [
@@ -218,13 +237,17 @@ class ElectricityConfig(BaseModel):
         default_factory=_EstimateRenewableCapacitiesConfig,
         description="Configuration for estimating renewable capacities.",
     )
+    estimate_battery_capacities: bool = Field(
+        False,
+        description="Enable estimation of existing battery storage capacities.",
+    )
     autarky: _AutarkyConfig = Field(
         default_factory=_AutarkyConfig,
         description="Autarky configuration.",
     )
-    transmission_limit: str = Field(
+    transmission_limit: str | dict[int, str] = Field(
         "vopt",
-        description="Limit on transmission expansion. The first part can be `v` (for setting a limit on line volume) or `c` (for setting a limit on line cost). The second part can be `opt` or a float bigger than one (e.g. 1.25). If `opt` is chosen line expansion is optimised according to its capital cost (where the choice `v` only considers overhead costs for HVDC transmission lines, while `c` uses more accurate costs distinguishing between overhead and underwater sections and including inverter pairs). The setting `v1.25` will limit the total volume of line expansion to 25% of currently installed capacities weighted by individual line lengths. The setting `c1.25` will allow to build a transmission network that costs no more than 25 % more than the current system.",
+        description="Limit on transmission expansion. The first part can be `v` (for setting a limit on line volume) or `c` (for setting a limit on line cost). The second part can be `opt` or a float bigger than one (e.g. 1.25). If `opt` is chosen line expansion is optimised according to its capital cost (where the choice `v` only considers overhead costs for HVDC transmission lines, while `c` uses more accurate costs distinguishing between overhead and underwater sections and including inverter pairs). The setting `v1.25` will limit the total volume of line expansion to 25% of currently installed capacities weighted by individual line lengths. The setting `c1.25` will allow to build a transmission network that costs no more than 25 % more than the current system. Can be given per planning horizon, e.g. `{2030: v1.05, 2040: v1.1}`. With myopic foresight, the limit of each subsequent planning horizon is relative to the transmission capacities of the previous planning horizon. Per-horizon values are not supported for perfect foresight.",
     )
 
     model_config = ConfigDict(populate_by_name=True)

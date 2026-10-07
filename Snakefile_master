@@ -6,42 +6,42 @@ rule run_snakefile_reference:
     output: touch("run_snakefile_reference.done")
     log: "logs/run_snakefile_reference.done",
     shell:
-        "snakemake --snakefile Snakefile_reference --cores 1 -call all"
+        "snakemake --snakefile Snakefile_reference --cores 8 -call all"
 
 rule run_snakefile_flexible_solar:
     input: "run_snakefile_reference.done"
     output: touch("run_snakefile_flexible_solar.done")
     log: "logs/run_snakefile_flexible_solar.done",
     shell:
-        "snakemake --snakefile Snakefile_flexible_solar --cores 1 -call all"
+        "snakemake --snakefile Snakefile_flexible_solar --cores 8 -call all"
 
 rule run_snakefile_flexible_onwind:
     input: "run_snakefile_flexible_solar.done"
     output: touch("run_snakefile_flexible_onwind.done")
     log: "logs/run_snakefile_flexible_onwind.done",
     shell:
-        "snakemake --snakefile Snakefile_flexible_onwind --cores 1 -call all"
+        "snakemake --snakefile Snakefile_flexible_onwind --cores 8 -call all"
 
 rule run_snakefile_flexible_offwind:
     input: "run_snakefile_flexible_onwind.done"
     output: touch("run_snakefile_flexible_offwind.done")
     log: "logs/run_snakefile_flexible_offwind.done",
     shell:
-        "snakemake --snakefile Snakefile_flexible_offwind --cores 1 -call all"
+        "snakemake --snakefile Snakefile_flexible_offwind --cores 8 -call all"
 
 rule run_snakefile_flexible_vre:
     input: "run_snakefile_flexible_offwind.done"
     output: touch("run_snakefile_flexible_vre.done")
     log: "logs/run_snakefile_flexible_vre.done",
     shell:
-        "snakemake --snakefile Snakefile_flexible_vre --cores 1 -call all"
+        "snakemake --snakefile Snakefile_flexible_vre --cores 8 -call all"
         
 rule run_snakefile_flexible_nuclear:
     input: "run_snakefile_flexible_vre.done"
     output: touch("run_snakefile_flexible_nuclear.done")
     log: "logs/run_snakefile_flexible_nuclear.done",
     shell:
-        "snakemake --snakefile Snakefile_flexible_nuclear --cores 1 -call all"
+        "snakemake --snakefile Snakefile_flexible_nuclear --cores 8 -call all"
 
 rule run_all_snakefiles:
     input: "run_snakefile_flexible_nuclear.done"

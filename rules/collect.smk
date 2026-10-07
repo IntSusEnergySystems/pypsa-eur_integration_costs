@@ -6,97 +6,62 @@
 localrules:
     all,
     cluster_networks,
-    prepare_elec_networks,
-    prepare_sector_networks,
-    solve_elec_networks,
-    solve_sector_networks,
 
 
 rule process_costs:
+    """Collects the processed technology cost tables for all runs and planning horizons."""
     input:
-        lambda w: (
-            expand(
-                resources(
-                    f"costs_{config_provider('costs', 'year')(w)}_processed.csv"
-                ),
-                run=config["run"]["name"],
-            )
-            if config_provider("foresight")(w) == "overnight"
-            else expand(
-                resources("costs_{planning_horizons}_processed.csv"),
-                **config["scenario"],
-                run=config["run"]["name"],
-            )
+        expand(
+            resources("costs_{horizon}_processed.csv"),
+            run=config["run"]["name"],
+            horizon=config["planning_horizons"],
         ),
 
 
 rule cluster_networks:
-    message:
-        "Collecting clustered network files"
+    """Collects the clustered networks and bus maps for all runs."""
     input:
         expand(
-            resources("networks/base_s_{clusters}.nc"),
-            **config["scenario"],
+            resources("networks/clustered.nc"),
+            run=config["run"]["name"],
+        ),
+        expand(
+            resources("busmap.csv"),
             run=config["run"]["name"],
         ),
 
 
-rule prepare_elec_networks:
-    message:
-        "Collecting prepared electricity network files"
+rule compose_networks:
+    """Collects the composed networks for all runs and planning horizons."""
     input:
         expand(
-            resources("networks/base_s_{clusters}_elec_{opts}.nc"),
-            **config["scenario"],
+            resources("networks/composed_{horizon}.nc"),
             run=config["run"]["name"],
+            horizon=config["planning_horizons"],
         ),
 
 
-rule prepare_sector_networks:
-    message:
-        "Collecting prepared sector-coupled network files"
+rule solve_networks:
+    """Collects the solved networks for all runs at the final planning horizon."""
     input:
         expand(
-            resources(
-                "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc"
+            RESULTS + "networks/solved_{horizon}.nc",
+            run=config["run"]["name"],
+            horizon=config["planning_horizons"][-1],
+        ),
+
+
+rule solve_operations_networks:
+    """Collects the operational dispatch networks for all runs and planning horizons."""
+    input:
+        expand(
+            RESULTS + "networks/operations_{horizon}.nc",
+            run=config["run"]["name"],
+            horizon=(
+                config["planning_horizons"][-1]
+                if config["foresight"] == "perfect"
+                else config["planning_horizons"]
             ),
-            **config["scenario"],
-            run=config["run"]["name"],
-        ),
-
-
-rule solve_elec_networks:
-    message:
-        "Collecting solved electricity network files"
-    input:
-        expand(
-            RESULTS + "networks/base_s_{clusters}_elec_{opts}.nc",
-            **config["scenario"],
-            run=config["run"]["name"],
-        ),
-
-
-rule solve_sector_networks:
-    message:
-        "Collecting solved sector-coupled network files"
-    input:
-        expand(
-            RESULTS
-            + "networks/base_s_{clusters}_{opts}_{sector_opts}_{planning_horizons}.nc",
-            **config["scenario"],
-            run=config["run"]["name"],
-        ),
-
-
-rule solve_sector_networks_perfect:
-    message:
-        "Collecting solved sector-coupled network files with perfect foresight"
-    input:
-        expand(
-            RESULTS
-            + "maps/static/base_s_{clusters}_{opts}_{sector_opts}-costs-all_{planning_horizons}.pdf",
-            **config["scenario"],
-            run=config["run"]["name"],
         ),
 
 
@@ -105,41 +70,46 @@ def balance_map_paths(kind, w):
     kind = "static" or "interactive"
     """
     cfg_key = "balance_map" if kind == "static" else "balance_map_interactive"
+    ext = "pdf" if kind == "static" else "html"
+
+    if config["foresight"] == "perfect":
+        return []
 
     return expand(
-        RESULTS
-        + f"maps/{kind}/base_s_{{clusters}}_{{opts}}_{{sector_opts}}_{{planning_horizons}}"
-        f"-balance_map_{{carrier}}.{'pdf'if kind== 'static' else 'html'}",
-        **config["scenario"],
+        RESULTS + f"maps/{kind}/balance_map_{{carrier}}_{{horizon}}.{ext}",
         run=config["run"]["name"],
+        horizon=config["planning_horizons"],
         carrier=config_provider("plotting", cfg_key, "bus_carriers")(w),
     )
 
 
 rule plot_balance_maps:
-    message:
-        "Plotting energy balance maps"
+    """Collects the static and interactive balance maps for all runs, horizons and carriers."""
     input:
         static=lambda w: balance_map_paths("static", w),
         interactive=lambda w: balance_map_paths("interactive", w),
 
 
 rule plot_balance_maps_static:
+    """Collects the static balance maps for all runs, horizons and carriers."""
     input:
         lambda w: balance_map_paths("static", w),
 
 
 rule plot_balance_maps_interactive:
+    """Collects the interactive balance maps for all runs, horizons and carriers."""
     input:
         lambda w: balance_map_paths("interactive", w),
 
 
-rule plot_power_networks_clustered:
-    message:
-        "Plotting clustered power network topology"
+rule plot_power_networks:
+    """Collects the clustered power network maps for all runs."""
     input:
-        expand(
-            resources("maps/power-network-s-{clusters}.pdf"),
-            **config["scenario"],
-            run=config["run"]["name"],
+        (
+            expand(
+                resources("maps/clustered_network.pdf"),
+                run=config["run"]["name"],
+            )
+            if config["foresight"] != "perfect"
+            else []
         ),

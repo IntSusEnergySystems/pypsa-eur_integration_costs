@@ -5,251 +5,190 @@
 """
 Config validation for PyPSA-EUR.
 
-The schema is exported to both `config/config.default.yaml` and `config/schema.json`.
-The json schema is also contributed to the schemastore.org and matches
-`**/pypsa-eur*/config/*.yaml` to get IDE support without additional configuration.
+The schema is exported to `config/config.default.yaml`, `config/plotting.default.yaml`,
+and `config/schema.default.json` (a single schema shared by both YAML files). The json
+schema is also contributed to the schemastore.org and matches `**/pypsa-eur*/config/*.yaml`
+to get IDE support without additional configuration.
 """
 
+import copy
+import pathlib
 import re
-from typing import Literal
+import warnings
+from functools import reduce
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from ruamel.yaml import YAML
+from snakemake.utils import update_config
 
-from scripts.lib.validation.config._base import ConfigModel
-from scripts.lib.validation.config.adjustments import AdjustmentsConfig
-from scripts.lib.validation.config.atlite import AtliteConfig
-from scripts.lib.validation.config.biomass import BiomassConfig
-from scripts.lib.validation.config.clustering import ClusteringConfig
-from scripts.lib.validation.config.co2_budget import Co2BudgetConfig
-from scripts.lib.validation.config.conventional import ConventionalConfig
-from scripts.lib.validation.config.costs import CostsConfig
-from scripts.lib.validation.config.countries import CountriesConfig
-from scripts.lib.validation.config.data import DataConfig
-from scripts.lib.validation.config.electricity import ElectricityConfig
-from scripts.lib.validation.config.enable import EnableConfig
-from scripts.lib.validation.config.energy import EnergyConfig
-from scripts.lib.validation.config.existing_capacities import ExistingCapacitiesConfig
-from scripts.lib.validation.config.foresight import ForesightConfig
-from scripts.lib.validation.config.industry import IndustryConfig
-from scripts.lib.validation.config.lines import LinesConfig
-from scripts.lib.validation.config.links import LinksConfig
-from scripts.lib.validation.config.load import LoadConfig
-from scripts.lib.validation.config.overpass_api import OverpassApiConfig
-from scripts.lib.validation.config.pypsa_eur import PypsaEurConfig
-from scripts.lib.validation.config.renewable import RenewableConfig
-from scripts.lib.validation.config.run import RunConfig
-from scripts.lib.validation.config.scenario import ScenarioConfig
-from scripts.lib.validation.config.sector import SectorConfig
-from scripts.lib.validation.config.snapshots import SnapshotsConfig
-from scripts.lib.validation.config.solar_thermal import SolarThermalConfig
-from scripts.lib.validation.config.solving import SolvingConfig
-from scripts.lib.validation.config.transformers import TransformersConfig
-from scripts.lib.validation.config.transmission_projects import (
-    TransmissionProjectsConfig,
-)
+from scripts.lib.validation.config._base import _registry
+from scripts.lib.validation.config._schema import ConfigSchema
 
 
-class LoggingConfig(ConfigModel):
-    """Configuration for top level `logging` settings."""
-
-    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-        "INFO",
-        description="Restrict console outputs to all infos, warning or errors only",
-    )
-    format: str = Field(
-        "%(levelname)s:%(name)s:%(message)s",
-        description="Custom format for log messages. See `LogRecord <https://docs.python.org/3/library/logging.html#logging.LogRecord>`_ attributes.",
-    )
-
-
-class RemoteConfig(ConfigModel):
-    """Configuration for top level `remote` settings."""
-
-    ssh: str = Field(
-        "",
-        description="Optionally specify the SSH of a remote cluster to be synchronized.",
-    )
-    path: str = Field(
-        "",
-        description="Optionally specify the file path within the remote cluster to be synchronized.",
-    )
-
-
-class SecretsConfig(ConfigModel):
-    """Configuration for top level `secrets` settings."""
-
-    corine: str = Field(
-        "",
-        description='API token for corine dataset retrieval. You can also pass the token by setting the environment variable "CORINE_API_TOKEN". See `scripts/retrieve_corine_dataset_primary.py` for more instructions.',
-    )
-
-
-class ConfigSchema(BaseModel):
+def validate_config(config: dict, extra: str | None = None) -> ConfigSchema:
     """
-    Combined configuration schema for PyPSA-EUR.
+    Validate config dict against schema.
+
+    Parameters
+    ----------
+    config : dict
+        Config dict to validate.
+    extra : {"ignore", "allow", "forbid"}, optional
+        Override how unknown keys are handled in all (nested) models, e.g.
+        ``"forbid"`` to raise a validation error for each of them. If None,
+        the behaviour configured in each model is used.
+
+    Returns
+    -------
+    Validated config model, with all config updaters applied.
     """
-
-    # TODO Change to extra='forbid' once schema covers all config options
-    # For soft-forks it is recommended to either extend the schema for full config
-    # coverage or allow extra fields with extra='allow'
-    model_config = ConfigDict(extra="allow", title="PyPSA-Eur Configuration")
-
-    # Top-level fields (from TopLevelConfig)
-    version: str = Field(
-        "v2025.07.0", description="Version of PyPSA-Eur. Descriptive only."
-    )
-    tutorial: bool = Field(
-        False,
-        description="Switch to retrieve the tutorial data set instead of the full data set.",
-    )
-    logging: LoggingConfig = Field(
-        default_factory=LoggingConfig,
-        description="Logging configuration for the workflow",
-    )
-    remote: RemoteConfig = Field(
-        default_factory=RemoteConfig,
-        description="Configuration for remote workflow execution",
-    )
-
-    run: RunConfig = Field(
-        default_factory=RunConfig,
-        description="Run configuration for PyPSA-EUR workflow execution.",
-    )
-    foresight: ForesightConfig = Field(
-        default_factory=ForesightConfig,
-        description="Foresight mode for the optimization. See Foresight Options for detailed explanations.",
-    )
-    scenario: ScenarioConfig = Field(
-        default_factory=ScenarioConfig,
-        description="Scenario configuration defining wildcards for the workflow.",
-    )
-    countries: CountriesConfig = Field(
-        default_factory=CountriesConfig,
-        description="European countries defined by their Two-letter country codes (ISO 3166-1) which should be included in the energy system model.",
-    )
-    snapshots: SnapshotsConfig = Field(
-        default_factory=SnapshotsConfig,
-        description="Configuration for the time period snapshots.",
-    )
-    enable: EnableConfig = Field(
-        default_factory=EnableConfig,
-        description="Flags to enable/disable workflow features.",
-    )
-    co2_budget: Co2BudgetConfig = Field(
-        default_factory=Co2BudgetConfig,
-        description="CO2 budget as fraction of 1990 emissions per planning horizon year.",
-    )
-    electricity: ElectricityConfig = Field(
-        default_factory=ElectricityConfig,
-        description="Electricity sector configuration.",
-    )
-    atlite: AtliteConfig = Field(
-        default_factory=AtliteConfig,
-        description="Atlite cutout configuration for weather data.",
-    )
-    renewable: RenewableConfig = Field(
-        default_factory=RenewableConfig,
-        description="Renewable energy technologies configuration.",
-    )
-    conventional: ConventionalConfig = Field(
-        default_factory=ConventionalConfig,
-        description="Conventional power plants configuration.",
-    )
-    lines: LinesConfig = Field(
-        default_factory=LinesConfig,
-        description="Transmission lines configuration.",
-    )
-    links: LinksConfig = Field(
-        default_factory=LinksConfig,
-        description="HVDC links configuration.",
-    )
-    transmission_projects: TransmissionProjectsConfig = Field(
-        default_factory=TransmissionProjectsConfig,
-        description="Transmission projects configuration.",
-    )
-    transformers: TransformersConfig = Field(
-        default_factory=TransformersConfig,
-        description="Transformers configuration.",
-    )
-    load: LoadConfig = Field(
-        default_factory=LoadConfig,
-        description="Electrical load configuration.",
-    )
-    pypsa_eur: PypsaEurConfig = Field(
-        default_factory=PypsaEurConfig,
-        description="PyPSA-Eur component filtering configuration.",
-    )
-    energy: EnergyConfig = Field(
-        default_factory=EnergyConfig,
-        description="Energy totals configuration.",
-    )
-    biomass: BiomassConfig = Field(
-        default_factory=BiomassConfig,
-        description="Biomass configuration.",
-    )
-    solar_thermal: SolarThermalConfig = Field(
-        default_factory=SolarThermalConfig,
-        description="Solar thermal configuration.",
-    )
-    existing_capacities: ExistingCapacitiesConfig = Field(
-        default_factory=ExistingCapacitiesConfig,
-        description="Existing capacities grouping configuration.",
-    )
-    sector: SectorConfig = Field(
-        default_factory=SectorConfig,
-        description="Sector coupling configuration.",
-    )
-    industry: IndustryConfig = Field(
-        default_factory=IndustryConfig,
-        description="Industry sector configuration.",
-    )
-    costs: CostsConfig = Field(
-        default_factory=CostsConfig,
-        description="Cost assumptions configuration.",
-    )
-    clustering: ClusteringConfig = Field(
-        default_factory=ClusteringConfig,
-        description="Network clustering configuration.",
-    )
-    adjustments: AdjustmentsConfig = Field(
-        default_factory=AdjustmentsConfig,
-        description="Network adjustments configuration.",
-    )
-    solving: SolvingConfig = Field(
-        default_factory=SolvingConfig,
-        description="Solver and optimization configuration.",
-    )
-    data: DataConfig = Field(
-        default_factory=DataConfig,
-        description="Data source configuration.",
-    )
-    overpass_api: OverpassApiConfig = Field(
-        default_factory=OverpassApiConfig,
-        description="Overpass API configuration for OSM data retrieval.",
-    )
-    secrets: SecretsConfig = Field(
-        default_factory=SecretsConfig,
-        description="Secrets configuration for API tokens.",
-    )
+    config_schema = ConfigSchema
+    name = config_schema._name.default
+    docs_url = config_schema._docs_url.default
+    for item in _registry:
+        updater_config = item(config_schema)
+        config_schema = updater_config.update()
+        if updater_config.docs_url is not None:
+            docs_url = updater_config.docs_url
+        if updater_config.name:
+            name += f".{updater_config.name}"
+    validated_config = config_schema.model_validate(config, extra=extra)
+    validated_config._name = name
+    validated_config._docs_url = docs_url
+    return validated_config
 
 
-def validate_config(config: dict) -> ConfigSchema:
-    """Validate config dict against schema."""
-    return ConfigSchema(**config)
+# Sections not covered by the schema or deliberately accepting arbitrary keys,
+# for which unknown keys are not reported
+UNCHECKED_SECTIONS = {"plotting", "conventional"}
 
 
-def generate_config_defaults(path: str = "config/config.default.yaml") -> dict:
-    """Generate config defaults YAML file and return the defaults dict."""
+def find_invalid_entries(config: dict) -> dict[str, list[str]]:
+    """
+    Find config entries that are unknown or have invalid values, including in nested sections.
+
+    Invalid values are those violating the type or allowed values of the schema,
+    e.g. a value outside a set of choices or a numeric range. Missing entries are
+    ignored, so partial override configs can be checked on their own.
+
+    Parameters
+    ----------
+    config : dict
+        Config dict to check.
+
+    Returns
+    -------
+    Error messages by dotted path of the invalid entries.
+    """
+    try:
+        validate_config(config, extra="forbid")
+    except ValidationError as e:
+        invalid = {}
+        for err in e.errors():
+            if err["type"] == "missing":
+                continue
+            if err["type"] == "extra_forbidden":
+                if err["loc"][0] in UNCHECKED_SECTIONS:
+                    continue
+                err["msg"] = "Unknown key, not part of the schema"
+            invalid.setdefault(_config_path(config, err["loc"]), []).append(err["msg"])
+        return invalid
+    return {}
+
+
+def _config_path(config: dict, loc: tuple) -> str:
+    """Dotted path of an error location, without pydantic's union member tags."""
+    path, data = [], config
+    for key in loc:
+        if isinstance(data, dict) and key in data:
+            data = data[key]
+        elif isinstance(data, list) and isinstance(key, int) and key < len(data):
+            data = data[key]
+        else:
+            break
+        path.append(str(key))
+    return ".".join(path) or "<root>"
+
+
+#: Deprecated config keys and the keys that take over their value. Remove an
+#: entry one release after adding it.
+DEPRECATED_KEYS: dict[str, list[str]] = {
+    "sector.tes": ["sector.ttes", "sector.district_heating.ptes.enable"],
+}
+
+
+def migrate_deprecated_keys(config: dict) -> None:
+    """
+    Move values of deprecated keys in place to the keys that replace them.
+
+    Apply it to each raw config and scenario override, since scripts read the
+    raw config and not the validated model.
+
+    Parameters
+    ----------
+    config : dict
+        Config or scenario override.
+    """
+    for old, new in DEPRECATED_KEYS.items():
+        *parents, key = old.split(".")
+        section = reduce(lambda d, k: d.get(k, {}), parents, config)
+        if key not in section:
+            continue
+        value = section.pop(key)
+        msg = f"`{old}` is deprecated and will be removed in the next release. Its value is used for `{'`, `'.join(new)}` instead."
+        warnings.warn(msg, FutureWarning)
+        for path in new:
+            *parents, key = path.split(".")
+            reduce(lambda d, k: d.setdefault(k, {}), parents, config)[key] = value
+
+
+def normalize_config(config: dict, validated: ConfigSchema) -> None:
+    """Normalize config values in place (e.g., ensure planning_horizons is a list)."""
+    config["planning_horizons"] = validated.planning_horizons
+
+
+def validate_scenarios(config: dict, scenarios: dict) -> None:
+    """Validate that each scenario override yields a valid, compatible config."""
+    for scenario_name, scenario_overrides in scenarios.items():
+        if "data" in scenario_overrides:
+            raise ValueError(
+                f"Scenario '{scenario_name}' overrides the 'data' block, but dataset "
+                "versions are resolved globally at workflow construction and cannot vary "
+                "per scenario. Move 'data' settings to the base config."
+            )
+        merged = copy.deepcopy(config)
+        update_config(merged, scenario_overrides)
+        for key in ("foresight", "planning_horizons"):
+            if merged[key] != config[key]:
+                raise ValueError(
+                    f"Scenario '{scenario_name}' changes '{key}', but collection and "
+                    "default targets are built from the base config, so it must be "
+                    "identical across scenarios. Set it at the top level and run "
+                    "differing values as separate workflows with their own run.name."
+                )
+        try:
+            validate_config(merged)
+        except Exception as e:
+            raise ValueError(
+                f"Scenario '{scenario_name}' failed config validation: {e}"
+            ) from e
+
+
+#: Top-level config keys that are written to their own defaults YAML file (via
+#: `generate_split_defaults`) instead of `config/config.{configname}.yaml`.
+SPLIT_CONFIG_FILES: dict[str, str] = {
+    "plotting": "config/plotting.{configname}.yaml",
+}
+
+
+def _convert_to_field_name(key: str) -> str:
+    """Convert dash-case to snake_case for field lookup."""
+    return key.replace("-", "_")
+
+
+def _write_defaults_yaml(path: str, config: ConfigSchema, defaults: dict) -> None:
+    """Write `defaults` (a subset of the validated config's top-level keys) to `path` as YAML."""
     from ruamel.yaml.comments import CommentedMap
-
-    def convert_to_field_name(key: str) -> str:
-        """Convert dash-case to snake_case for field lookup."""
-        return key.replace("-", "_")
-
-    # by_alias is needed to export dash-case instead of snake_case (which are some set aliases)
-    # the goal should be to use snake_case consistently
-    defaults = ConfigSchema().model_dump(by_alias=True)
 
     # Create YAML instance with custom settings
     yaml_writer = YAML()
@@ -262,6 +201,7 @@ def generate_config_defaults(path: str = "config/config.default.yaml") -> dict:
     def str_representer(dumper, data):
         """Use block style for multiline, quotes for special chars, plain otherwise."""
         TAG = "tag:yaml.org,2002:str"
+        data = str(data)  # Ensure it's a plain string (not e.g. Path)
         if "\n" in data:
             return dumper.represent_scalar(TAG, data, style="|")
         if data == "" or any(c in data for c in ":{}[]&*#?|-<>=!%@"):
@@ -269,28 +209,79 @@ def generate_config_defaults(path: str = "config/config.default.yaml") -> dict:
         return dumper.represent_scalar(TAG, data, style="")
 
     yaml_writer.representer.add_representer(str, str_representer)
+    yaml_writer.representer.add_multi_representer(pathlib.PurePath, str_representer)
 
     # Create a CommentedMap to add comments
     data = CommentedMap()
 
     # Add yaml-language-server comment at the very top (before first key)
-    data.yaml_set_start_comment("yaml-language-server: $schema=./schema.json")
+    data.yaml_set_start_comment(
+        f"yaml-language-server: $schema=./schema.{config._name}.json"
+    )
 
     for key, value in defaults.items():
         data[key] = value
 
-        field_name = convert_to_field_name(key)
-        docs_url = f"https://pypsa-eur.readthedocs.io/en/latest/configuration.html#{field_name}"
+        field_name = _convert_to_field_name(key)
+        docs_url = config._docs_url.format(field_name=field_name)
         data.yaml_set_comment_before_after_key(key, before=f"\ndocs in {docs_url}")
 
     # Write to file
     with open(path, "w") as f:
         yaml_writer.dump(data, f)
 
-    return defaults
+
+def generate_config_defaults(path: str = "config/config.{configname}.yaml") -> dict:
+    """
+    Generate config defaults YAML file and return the defaults dict.
+
+    Top-level keys listed in `SPLIT_CONFIG_FILES` (e.g. `plotting`) are excluded here;
+    use `generate_split_defaults` to generate their dedicated defaults files.
+    """
+    # by_alias is needed to export dash-case instead of snake_case (which are some set aliases)
+    # the goal should be to use snake_case consistently
+    config = validate_config({})
+    defaults = config.model_dump(by_alias=True)
+    main_defaults = {
+        key: value for key, value in defaults.items() if key not in SPLIT_CONFIG_FILES
+    }
+
+    _write_defaults_yaml(path.format(configname=config._name), config, main_defaults)
+
+    return main_defaults
 
 
-def generate_config_schema(path: str = "config/schema.json") -> dict:
+def generate_split_defaults(key: str, path: str | None = None) -> dict:
+    """
+    Generate the dedicated defaults YAML file for a top-level key listed in `SPLIT_CONFIG_FILES`.
+
+    Returns the defaults dict for that single top-level key (e.g. `{"plotting": {...}}`).
+    """
+    if key not in SPLIT_CONFIG_FILES:
+        raise ValueError(
+            f"'{key}' is not a split-out config key. Known keys: "
+            f"{sorted(SPLIT_CONFIG_FILES)}"
+        )
+    if path is None:
+        path = SPLIT_CONFIG_FILES[key]
+
+    config = validate_config({})
+    defaults = config.model_dump(by_alias=True)
+    key_defaults = {key: defaults[key]}
+
+    _write_defaults_yaml(path.format(configname=config._name), config, key_defaults)
+
+    return key_defaults
+
+
+def generate_plotting_defaults(
+    path: str = "config/plotting.{configname}.yaml",
+) -> dict:
+    """Generate plotting defaults YAML file and return the plotting defaults dict."""
+    return generate_split_defaults("plotting", path)
+
+
+def generate_config_schema(path: str = "config/schema.{configname}.json") -> dict:
     """Generate JSON schema file and return the schema dict."""
     import json
     import math
@@ -377,14 +368,15 @@ def generate_config_schema(path: str = "config/schema.json") -> dict:
             return [convert_rst_to_markdown(item) for item in obj]
         return obj
 
-    schema = ConfigSchema.model_json_schema()
+    config = validate_config({})
+    schema = config.model_json_schema()
     defs = schema.get("$defs", {})
     schema = resolve_refs(schema, defs)
     schema = sanitize_for_json(schema)
     schema = remove_nested_titles(schema)
     schema = remove_object_type(schema)
     schema = convert_rst_to_markdown(schema)
-    with open(path, "w") as f:
+    with open(path.format(configname=config._name), "w") as f:
         json.dump(schema, f, indent=2)
         f.write("\n")
     return schema
@@ -392,8 +384,16 @@ def generate_config_schema(path: str = "config/schema.json") -> dict:
 
 __all__ = [
     "ConfigSchema",
+    "SPLIT_CONFIG_FILES",
+    "DEPRECATED_KEYS",
     "validate_config",
+    "migrate_deprecated_keys",
+    "find_invalid_entries",
+    "validate_scenarios",
+    "normalize_config",
     "generate_config_defaults",
+    "generate_split_defaults",
+    "generate_plotting_defaults",
     "generate_config_schema",
     "ValidationError",
 ]

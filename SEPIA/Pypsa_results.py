@@ -95,14 +95,8 @@ def logo():
     return logo
 
 
-def build_filename(cluster,opt,sector_opt,planning_horizon):
-    prefix=f"results/{study}/networks/base_"
-    return prefix+"s_{cluster}_{opt}_{sector_opt}_{planning_horizon}.nc".format(
-        cluster=cluster,
-        opt=opt,
-        sector_opt=sector_opt,
-        planning_horizon=planning_horizon
-    )
+def build_filename(cluster, opt, sector_opt, planning_horizon):
+    return f"results/{study}/networks/solved_{planning_horizon}.nc"
 
 def load_file(filename):
     # Use pypsa.Network to load the network from the filename
@@ -117,164 +111,132 @@ def load_files(study, planning_horizons, cluster, opt, sector_opt):
 
 
 
+def country_average_marginal_prices(network, carrier):
+    """Average marginal price of every node of `carrier` in each country."""
+    buses = network.buses.index[network.buses.carrier == carrier]
+    prices = network.buses_t.marginal_price.reindex(columns=buses).dropna(axis=1, how="all")
+    if prices.empty:
+        return pd.DataFrame(index=network.snapshots)
+    return prices.T.groupby(prices.columns.astype(str).str[:2]).mean().T
+
+
+def _import_export_from_flows(flows, domestic_country, foreign_country, country_prices):
+    """Value cross-border flows with country-average marginal prices.
+
+    Positive flow leaves the domestic country (export). Negative flow enters it (import).
+    Branches whose domestic or foreign country has no price are skipped.
+    """
+    if flows is None or flows.empty:
+        return 0.0, 0.0
+
+    flows = flows.fillna(0.0)
+    domestic_country = domestic_country.reindex(flows.columns)
+    foreign_country = foreign_country.reindex(flows.columns)
+    priced = domestic_country.isin(country_prices.columns) & foreign_country.isin(country_prices.columns)
+    flows = flows.loc[:, priced]
+    if flows.empty:
+        return 0.0, 0.0
+
+    domestic_country = domestic_country.loc[flows.columns]
+    foreign_country = foreign_country.loc[flows.columns]
+    price_domestic = country_prices.reindex(columns=domestic_country.to_numpy())
+    price_foreign = country_prices.reindex(columns=foreign_country.to_numpy())
+    price_domestic.columns = flows.columns
+    price_foreign.columns = flows.columns
+
+    export_revenue = flows.clip(lower=0).mul(price_domestic)
+    import_cost = (-flows.clip(upper=0)).mul(price_foreign)
+    return float(import_cost.sum().sum()), float(export_revenue.sum().sum())
+
+
+def _cross_border_branch_costs(flows, component, country, country_prices, at_bus0):
+    """Import cost and export revenue on cross-border branches touching `country`.
+
+    Branches with both ends in the same country are excluded. `at_bus0` selects
+    p0 (country at bus0) or p1 (country at bus1).
+    """
+    if flows is None or flows.empty:
+        return 0.0, 0.0
+
+    branches = flows.columns.intersection(component.index)
+    bus0_country = component.bus0.astype(str).str[:2].reindex(branches)
+    bus1_country = component.bus1.astype(str).str[:2].reindex(branches)
+    cross_border = bus0_country != bus1_country
+    if at_bus0:
+        selected = branches[((bus0_country == country) & cross_border).fillna(False).to_numpy()]
+        domestic = bus0_country
+        foreign = bus1_country
+    else:
+        selected = branches[((bus1_country == country) & cross_border).fillna(False).to_numpy()]
+        domestic = bus1_country
+        foreign = bus0_country
+
+    return _import_export_from_flows(
+        flows.reindex(columns=selected),
+        domestic.reindex(selected),
+        foreign.reindex(selected),
+        country_prices,
+    )
+
+
+def _net_import_export_cost(parts):
+    import_cost = sum(part[0] for part in parts)
+    export_revenue = sum(part[1] for part in parts)
+    return import_cost - export_revenue
+
+
 def calculate_elec_import_export_costs(country, planning_horizons):
-    def calculate_import_export_separate(flows, direction, network, marginal_prices):
-        import_cost = pd.DataFrame(index=flows.index, columns=flows.columns)
-        export_revenue = pd.DataFrame(index=flows.index, columns=flows.columns)
-
-        for line in flows.columns:
-            # Identify buses
-            if direction == 'ac0' or direction == 'dc0':
-                bus0 = network.lines.loc[line, "bus0"] if 'ac' in direction else network.links.loc[line, "bus0"]
-                bus1 = network.lines.loc[line, "bus1"] if 'ac' in direction else network.links.loc[line, "bus1"]
-            else:
-                bus0 = network.lines.loc[line, "bus1"] if 'ac' in direction else network.links.loc[line, "bus1"]
-                bus1 = network.lines.loc[line, "bus0"] if 'ac' in direction else network.links.loc[line, "bus0"]
-
-            if bus0 not in marginal_prices.columns or bus1 not in marginal_prices.columns:
-                continue
-
-            price_bus0 = marginal_prices[bus0]
-            price_bus1 = marginal_prices[bus1]
-
-            for t in flows.index:
-                flow = flows.at[t, line]
-                if flow < 0:  # Import
-                    import_cost.at[t, line] = -flow * price_bus1[t]
-                    export_revenue.at[t, line] = 0
-                else:  # Export
-                    import_cost.at[t, line] = 0
-                    export_revenue.at[t, line] = flow * price_bus0[t]
-
-        return import_cost, export_revenue
-
     results = {}
 
     for planning_horizon in planning_horizons:
-        # Load network
         n = loaded_files[planning_horizon]
+        country_prices = country_average_marginal_prices(n, "AC")
+        cross_border = n.lines.bus0.astype(str).str[:2] != n.lines.bus1.astype(str).str[:2]
 
-        # Marginal prices
-        marginal_price_filter = n.buses.carrier == "AC"
-        marginal_price = n.buses_t.marginal_price.filter(items=marginal_price_filter[marginal_price_filter].index)
-        marginal_price = marginal_price.drop(columns=["GB3 0"], errors='ignore')
+        ac_forward = n.lines_t.p0.reindex(columns=n.lines.index[(n.lines.bus0.astype(str).str[:2] == country) & cross_border])
+        ac_reverse = n.lines_t.p1.reindex(columns=n.lines.index[(n.lines.bus1.astype(str).str[:2] == country) & cross_border])
 
-        # AC lines
-        filtered_ac_lines = n.lines.bus0.str[:2] == country
-        ac_lines = n.lines_t.p0.filter(items=filtered_ac_lines[filtered_ac_lines].index)
+        dc = n.links.carrier == "DC"
+        dc_cross = n.links.bus0.astype(str).str[:2] != n.links.bus1.astype(str).str[:2]
+        dc_forward = n.links_t.p0.reindex(columns=n.links.index[dc & (n.links.bus0.astype(str).str[:2] == country) & dc_cross])
+        dc_reverse = n.links_t.p1.reindex(columns=n.links.index[dc & (n.links.bus1.astype(str).str[:2] == country) & dc_cross])
 
-        filtered_ac_lines_r = n.lines.bus1.str[:2] == country
-        ac_lines_r = n.lines_t.p1.filter(items=filtered_ac_lines_r[filtered_ac_lines_r].index)
-
-        # DC links
-        filtered_dc_lines = (n.links.carrier == 'DC') & (n.links.bus0.str[:2] == country)
-        dc_lines = n.links_t.p0.filter(items=filtered_dc_lines[filtered_dc_lines].index)
-        dc_lines = dc_lines.drop(columns=["relation/6914309-500-DC"], errors='ignore')
-
-        filtered_dc_lines_r = (n.links.carrier == 'DC') & (n.links.bus1.str[:2] == country)
-        dc_lines_r = n.links_t.p1.filter(items=filtered_dc_lines_r[filtered_dc_lines_r].index)
-        dc_lines_r = dc_lines_r.drop(columns=["relation/6914309-500-DC-reversed"], errors='ignore')
-# Calculate import/export
-        ac_import, ac_export = calculate_import_export_separate(ac_lines, "ac0", n, marginal_price)
-        ac_r_import, ac_r_export = calculate_import_export_separate(ac_lines_r, "acr", n, marginal_price)
-        dc_import, dc_export = calculate_import_export_separate(dc_lines, "dc0", n, marginal_price)
-        dc_r_import, dc_r_export = calculate_import_export_separate(dc_lines_r, "dcr", n, marginal_price)
-
-        # Total import/export
-        total_import_cost = ac_import.add(ac_r_import, fill_value=0).add(dc_import, fill_value=0).add(dc_r_import, fill_value=0)
-        total_export_revenue = ac_export.add(ac_r_export, fill_value=0).add(dc_export, fill_value=0).add(dc_r_export, fill_value=0)
-
-        # Net cost
-        total_import_cost_sum = total_import_cost.sum().sum()
-        total_export_revenue_sum = total_export_revenue.sum().sum()
-        net_cost = total_import_cost_sum - total_export_revenue_sum
-
+        net_cost = _net_import_export_cost([
+            _cross_border_branch_costs(ac_forward, n.lines, country, country_prices, at_bus0=True),
+            _cross_border_branch_costs(ac_reverse, n.lines, country, country_prices, at_bus0=False),
+            _cross_border_branch_costs(dc_forward, n.links, country, country_prices, at_bus0=True),
+            _cross_border_branch_costs(dc_reverse, n.links, country, country_prices, at_bus0=False),
+        ])
         results[planning_horizon] = net_cost
 
-    # Convert results to DataFrame
-    results_df = pd.DataFrame.from_dict(results, orient='index', columns=['net_cost'])
-    results_df.index.name = 'planning_horizon'
-
+    results_df = pd.DataFrame.from_dict(results, orient="index", columns=["net_cost"])
+    results_df.index.name = "planning_horizon"
     return results_df
 
+
 def calculate_h2_import_export_costs(country, planning_horizons):
-    def calculate_import_export_separate(flows, direction, network, marginal_prices):
-     import_cost = pd.DataFrame(index=flows.index, columns=flows.columns)
-     export_revenue = pd.DataFrame(index=flows.index, columns=flows.columns)
-
-     for pipeline in flows.columns:
-        # Always use network.links for pipelines
-        if direction == 'forward':
-            bus0 = network.links.loc[pipeline, "bus0"]
-            bus1 = network.links.loc[pipeline, "bus1"]
-        else:  # reverse
-            bus0 = network.links.loc[pipeline, "bus1"]
-            bus1 = network.links.loc[pipeline, "bus0"]
-
-        if bus0 not in marginal_prices.columns or bus1 not in marginal_prices.columns:
-            continue
-
-        price_bus0 = marginal_prices[bus0]
-        price_bus1 = marginal_prices[bus1]
-
-        for t in flows.index:
-            flow = flows.at[t, pipeline]
-            if flow < 0:  # Import
-                import_cost.at[t, pipeline] = -flow * price_bus1[t]
-                export_revenue.at[t, pipeline] = 0
-            else:  # Export
-                import_cost.at[t, pipeline] = 0
-                export_revenue.at[t, pipeline] = flow * price_bus0[t]
-
-     return import_cost, export_revenue
-
     results = {}
+    pipeline_carriers = ["H2 pipeline", "H2 pipeline retrofitted"]
 
     for planning_horizon in planning_horizons:
-        # Load network
         n = loaded_files[planning_horizon]
+        country_prices = country_average_marginal_prices(n, "H2")
+        is_pipeline = n.links.carrier.isin(pipeline_carriers)
+        cross_border = n.links.bus0.astype(str).str[:2] != n.links.bus1.astype(str).str[:2]
+        bus0_country = n.links.bus0.astype(str).str[:2] == country
+        bus1_country = n.links.bus1.astype(str).str[:2] == country
 
-        # Marginal prices
-        marginal_price_filter = n.buses.carrier == "H2"
-        marginal_price = n.buses_t.marginal_price.filter(items=marginal_price_filter[marginal_price_filter].index)
-        marginal_price = marginal_price.drop(columns=["GB3 0"], errors='ignore')
+        forward = n.links_t.p0.reindex(columns=n.links.index[is_pipeline & bus0_country & cross_border])
+        reverse = n.links_t.p1.reindex(columns=n.links.index[is_pipeline & bus1_country & cross_border])
 
-        # AC lines
-        filtered_h2_pipelines = (n.links.carrier == 'H2 pipeline') & (n.links.bus0.str[:2] == country)
-        h2_pipelines = n.links_t.p0.filter(items=filtered_h2_pipelines[filtered_h2_pipelines].index)
-
-        filtered_h2_pipelines_r = (n.links.carrier == 'H2 pipeline') & (n.links.bus1.str[:2] == country)
-        h2_pipelines_r = n.links_t.p1.filter(items=filtered_h2_pipelines_r[filtered_h2_pipelines_r].index)
-
-        # DC links
-        filtered_h2_retro_pipelines = (n.links.carrier == 'H2 pipeline retrofitted') & (n.links.bus0.str[:2] == country)
-        h2_retro_pipelines = n.links_t.p0.filter(items=filtered_h2_retro_pipelines[filtered_h2_retro_pipelines].index)
-
-
-        filtered_h2_retro_pipelines_r = (n.links.carrier == 'H2 pipeline retrofitted') & (n.links.bus1.str[:2] == country)
-        h2_retro_pipelines_r = n.links_t.p1.filter(items=filtered_h2_retro_pipelines_r[filtered_h2_retro_pipelines_r].index)
-
-        # Calculate import/export
-        h2_import, h2_export = calculate_import_export_separate(h2_pipelines, "ac0", n, marginal_price)
-        h2_r_import, h2_r_export = calculate_import_export_separate(h2_pipelines_r, "acr", n, marginal_price)
-        h2_retro_import, h2_retro_export = calculate_import_export_separate(h2_retro_pipelines, "dc0", n, marginal_price)
-        h2_retro_r_import, h2_retro_r_export = calculate_import_export_separate(h2_retro_pipelines_r, "dcr", n, marginal_price)
-
-        # Total import/export
-        total_import_cost = h2_import.add(h2_r_import, fill_value=0).add(h2_retro_import, fill_value=0).add(h2_retro_r_import, fill_value=0)
-        total_export_revenue = h2_export.add(h2_r_export, fill_value=0).add(h2_retro_export, fill_value=0).add(h2_retro_r_export, fill_value=0)
-
-        # Net cost
-        total_import_cost_sum = total_import_cost.sum().sum()
-        total_export_revenue_sum = total_export_revenue.sum().sum()
-        net_cost = total_import_cost_sum - total_export_revenue_sum
-
+        net_cost = _net_import_export_cost([
+            _cross_border_branch_costs(forward, n.links, country, country_prices, at_bus0=True),
+            _cross_border_branch_costs(reverse, n.links, country, country_prices, at_bus0=False),
+        ])
         results[planning_horizon] = net_cost
 
-    # Convert results to DataFrame
-    results_df = pd.DataFrame.from_dict(results, orient='index', columns=['net_cost'])
-    results_df.index.name = 'planning_horizon'
-
+    results_df = pd.DataFrame.from_dict(results, orient="index", columns=["net_cost"])
+    results_df.index.name = "planning_horizon"
     return results_df
 
 
@@ -859,13 +821,15 @@ def plot_series_power(cluster, opt, sector_opt, planning_horizons,start,stop,tit
             ) 
 
         supplyn = supplyn.groupby(rename_techs_tyndpp, axis=1).sum()
-        filtered_ac_lines = n.lines.bus0.str[:2] == country
+        ac_cross = n.lines.bus0.str[:2] != n.lines.bus1.str[:2]
+        filtered_ac_lines = (n.lines.bus0.str[:2] == country) & ac_cross
         ac_lines = n.lines_t.p0.filter(items=filtered_ac_lines[filtered_ac_lines == True].index).sum(axis=1)
-        filtered_ac_lines_r = n.lines.bus1.str[:2] == country
+        filtered_ac_lines_r = (n.lines.bus1.str[:2] == country) & ac_cross
         ac_lines_r = n.lines_t.p1.filter(items=filtered_ac_lines_r[filtered_ac_lines_r == True].index).sum(axis=1)
-        filtered_dc_lines = (n.links.carrier == 'DC') & (n.links.bus0.str[:2] == country)
+        dc_cross = n.links.bus0.str[:2] != n.links.bus1.str[:2]
+        filtered_dc_lines = (n.links.carrier == 'DC') & (n.links.bus0.str[:2] == country) & dc_cross
         dc_lines = n.links_t.p0.filter(items=filtered_dc_lines[filtered_dc_lines == True].index).sum(axis=1)
-        filtered_dc_lines_r = (n.links.carrier == 'DC') & (n.links.bus1.str[:2] == country)
+        filtered_dc_lines_r = (n.links.carrier == 'DC') & (n.links.bus1.str[:2] == country) & dc_cross
         dc_lines_r = n.links_t.p1.filter(items=filtered_dc_lines_r[filtered_dc_lines_r == True].index).sum(axis=1)
         merged_series = pd.concat([ac_lines,ac_lines_r, dc_lines, dc_lines_r], axis=1)
         imp_exp = merged_series.sum(axis=1)
@@ -901,8 +865,10 @@ def plot_series_power(cluster, opt, sector_opt, planning_horizons,start,stop,tit
 
         
         supplyn = supplyn.groupby(supplyn.columns, axis=1).sum()
+        run_name = snakemake.config["run"]["name"]
 
-        if country != 'EU':
+        if not run_name.startswith("flexible") or run_name == "flexible_nuclear":
+         if country != 'EU':
           c_solarn = ((n.generators_t.p_max_pu * n.generators.p_nom_opt) - n.generators_t.p).filter(
             like="solar", axis=1
           ).filter(like=country).sum(axis=1) / 1e3
@@ -912,7 +878,7 @@ def plot_series_power(cluster, opt, sector_opt, planning_horizons,start,stop,tit
           c_offwindn = ((n.generators_t.p_max_pu * n.generators.p_nom_opt) - n.generators_t.p).filter(
             like="offwind", axis=1
           ).filter(like=country).sum(axis=1) / 1e3
-        else:
+         else:
           c_solarn = ((n.generators_t.p_max_pu * n.generators.p_nom_opt) - n.generators_t.p).filter(
             like="solar", axis=1
           ).sum(axis=1) / 1e3
@@ -922,21 +888,21 @@ def plot_series_power(cluster, opt, sector_opt, planning_horizons,start,stop,tit
           c_offwindn = ((n.generators_t.p_max_pu * n.generators.p_nom_opt) - n.generators_t.p).filter(
             like="offwind", axis=1
           ).sum(axis=1) / 1e3
-        supplyn = supplyn.T
-        if "solar" in supplyn.index:
+         supplyn = supplyn.T
+         if "solar" in supplyn.index:
           supplyn.loc["solar"] = supplyn.loc["solar"] + c_solarn
           supplyn.loc["solar curtailment"] = -abs(c_solarn)
-        if "onshore wind" in supplyn.index:
+         if "onshore wind" in supplyn.index:
           supplyn.loc["onshore wind"] = supplyn.loc["onshore wind"] + c_onwindn
           supplyn.loc["onshore curtailment"] = -abs(c_onwindn)
-        if "offshore wind" in supplyn.index:
+         if "offshore wind" in supplyn.index:
           supplyn.loc["offshore wind"] = supplyn.loc["offshore wind"] + c_offwindn
           supplyn.loc["offshore curtailment"] = -abs(c_offwindn)
-        if "H2 pipeline" in supplyn.index:
+         if "H2 pipeline" in supplyn.index:
             supplyn = supplyn.drop('H2 pipeline')
-        if "gas pipeline" in supplyn.index:
+         if "gas pipeline" in supplyn.index:
             supplyn = supplyn.drop('gas pipeline')
-        supplyn = supplyn.T
+         supplyn = supplyn.T
         if "V2G" in n.carriers.index:
           if country != 'EU':
               v2g = n.links_t.p1.filter(like=country).filter(like="V2G").sum(axis=1)
@@ -1599,7 +1565,7 @@ def plot_map(
     for target_index, reference_index in index_mapping.items():
         if target_index in gdp_ratio.index and reference_index in gdp_ratio.index:
             gdp_ratio[target_index] = gdp_ratio[reference_index]
-    regions = gpd.read_file(f"resources/{study}/regions_onshore_base_s_{cluster}.geojson").set_index("name")
+    regions = gpd.read_file(f"resources/{study}/onshore_regions.geojson").set_index("name")
     regions['GDP'] = regions.index.map(gdp_ratio)
     regions = regions.to_crs(ccrs.EqualEarth())
     
@@ -1865,7 +1831,7 @@ def plot_h2_map(network):
     n = network.copy()
     assign_locations(n)
     h2_storage = n.stores.query("carrier == 'H2'")
-    regions = gpd.read_file(f"resources/{study}/regions_onshore_base_s_{cluster}.geojson").set_index("name")
+    regions = gpd.read_file(f"resources/{study}/onshore_regions.geojson").set_index("name")
     regions["H2"] = (
         h2_storage.rename(index=h2_storage.bus.map(n.buses.location))
         .e_nom_opt.groupby(level=0)
@@ -3073,10 +3039,10 @@ if __name__ == "__main__":
     #import pickle
     #with open("snakemake_dump.pkl", "wb") as f:
     #    pickle.dump(snakemake, f)
-    cluster = snakemake.params.scenario["clusters"][0]
-    opt = snakemake.params.scenario["opts"][0]
-    sector_opt = snakemake.params.scenario["sector_opts"][0]
-    planning_horizons = [2030, 2040, 2050]
+    cluster = ""
+    opt = ""
+    sector_opt = ""
+    planning_horizons = list(snakemake.params.planning_horizons)
     discount_rate = 0.07
     methanol_fuel = 119 #https://www.methanol.org/wp-content/uploads/2023/05/Marine_Methanol_Report_Methanol_Institute_May_2023.pdf
     ammonia_fuel = 92 #https://www.iee.fraunhofer.de/en/presse-infothek/press-media/2022/green-ammonia-for-climate-protection.html

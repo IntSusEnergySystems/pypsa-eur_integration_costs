@@ -5,12 +5,12 @@
 """
 Solving configuration.
 
-See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration.html#solving
+See docs in https://pypsa-eur.readthedocs.io/en/latest/configuration/#solving_cf
 """
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PositiveFloat, field_validator, model_validator
 
 from scripts.lib.validation.config._base import ConfigModel
 
@@ -51,6 +51,68 @@ class _ModelKwargsConfig(BaseModel):
     )
 
 
+class _LoadSheddingConfig(ConfigModel):
+    """Configuration for `solving.options.load_shedding` settings."""
+
+    enable: bool = Field(
+        False,
+        description="Enable load shedding by adding high-cost generators to avoid infeasibilities. Requires either all_carriers: true or at least one entry in carriers.",
+    )
+    default_cost: PositiveFloat = Field(
+        100000,
+        description="The default cost for load-shedding in the unit of the bus carrier (e.g. EUR/MWh for electricity, EUR/t_CO2 for CO2). Must be positive.",
+    )
+    all_carriers: bool = Field(
+        True,
+        description="Switch to apply load shedding to all carriers. Otherwise, load shedding will be applied to listed carriers only.",
+    )
+    carriers: dict[str, PositiveFloat] = Field(
+        {},
+        description="Dictionary of carriers and their specific load shedding cost in the unit of the bus carrier (e.g. EUR/MWh for electricity, EUR/t_CO2 for CO2). If load shedding is enabled for all carriers, the default cost is assumed for non-listed carriers.",
+    )
+
+    @model_validator(mode="after")
+    def check_enabled_has_targets(self):
+        if self.enable and not self.carriers and not self.all_carriers:
+            raise ValueError(
+                "Load shedding is enabled but no carriers are specified and "
+                "'all_carriers' is False. Either specify carriers or "
+                "set 'all_carriers' to True."
+            )
+        return self
+
+
+class _LoadSinksConfig(ConfigModel):
+    """Configuration for `solving.options.load_sinks` settings."""
+
+    enable: bool = Field(
+        False,
+        description="Add load sinks by adding negative-cost, energy consuming generators to avoid infeasibilities by absorbing excess energy. Requires either all_carriers: true or at least one entry in carriers.",
+    )
+    default_cost: PositiveFloat = Field(
+        100000,
+        description="The default cost for load sinks in the unit of the bus carrier (e.g. EUR/MWh for electricity, EUR/t_CO2 for CO2). Must be positive.",
+    )
+    all_carriers: bool = Field(
+        False,
+        description="Switch to add load sinks for all carriers. Otherwise, load sinks will be added for listed carriers only.",
+    )
+    carriers: dict[str, PositiveFloat] = Field(
+        {},
+        description="Dictionary of carriers and their specific load sink cost in the unit of the bus carrier (e.g. EUR/MWh for electricity, EUR/t_CO2 for CO2). If load sinks are added for all carriers, the default cost is assumed for non-listed carriers.",
+    )
+
+    @model_validator(mode="after")
+    def check_enabled_has_targets(self):
+        if self.enable and not self.carriers and not self.all_carriers:
+            raise ValueError(
+                "Load sinks are enabled but no carriers are specified and "
+                "'all_carriers' is False. Either specify carriers or "
+                "set 'all_carriers' to True."
+            )
+        return self
+
+
 class _SolvingOptionsConfig(BaseModel):
     """Configuration for `solving.options` settings."""
 
@@ -58,9 +120,13 @@ class _SolvingOptionsConfig(BaseModel):
         0.01,
         description="To avoid too small values in the renewables` per-unit availability time series values below this threshold are set to zero.",
     )
-    load_shedding: bool | float = Field(
-        False,
-        description="Add generators with very high marginal cost to simulate load shedding and avoid problem infeasibilities. If load shedding is a float, it denotes the marginal cost in EUR/kWh.",
+    load_shedding: _LoadSheddingConfig = Field(
+        default_factory=_LoadSheddingConfig,
+        description="Load shedding settings.",
+    )
+    load_sinks: _LoadSinksConfig = Field(
+        default_factory=_LoadSinksConfig,
+        description="Load sinks settings.",
     )
     curtailment_mode: bool = Field(
         False,
@@ -76,7 +142,7 @@ class _SolvingOptionsConfig(BaseModel):
     )
     rolling_horizon: bool = Field(
         False,
-        description="Switch for rule `solve_operations_network` whether to optimize the network in a rolling horizon manner, where the snapshot range is split into slices of size `horizon` which are solved consecutively. This setting has currently no effect on sector-coupled networks.",
+        description="Switch for rule `solve_network` whether to optimize the network in a rolling horizon manner instead of capacity expansion, where the snapshot range is split into slices of size `horizon` which are solved consecutively. This setting has currently no effect on sector-coupled networks.",
     )
     seed: int = Field(
         123, description="Random seed for increased deterministic behaviour."
@@ -101,9 +167,9 @@ class _SolvingOptionsConfig(BaseModel):
         3,
         description="Maximum number of solving iterations in between which resistance and reactence (`x/r`) are updated for branches according to `s_nom_opt` of the previous run.",
     )
-    transmission_losses: int = Field(
-        2,
-        description="Add piecewise linear approximation of transmission losses based on n tangents. Defaults to 0, which means losses are ignored.",
+    transmission_losses: bool | int | dict[str, Any] = Field(
+        {"mode": "secants", "atol": 15, "rtol": 0.5},
+        description='Piecewise linear approximation of losses in AC lines. `false` disables losses, `true` uses the PyPSA default secant-based approximation (`atol=1` MW, `rtol=0.1`). A dict sets the approximation, e.g. `{"mode": "tangents", "segments": 2}` for the former tangent-based method. An integer is deprecated and sets the number of tangents. The default `atol` and `rtol` keep the number of extra constraints close to that of the former tangent-based method.',
     )
     linearized_unit_commitment: bool = Field(
         True,
@@ -113,6 +179,10 @@ class _SolvingOptionsConfig(BaseModel):
         365,
         description="Number of snapshots to consider in each iteration. Defaults to 100.",
     )
+    overlap: int = Field(
+        0,
+        description="Number of overlapping snapshots between consecutive iterations in rolling horizon optimization. Defaults to 0, which means no overlap.",
+    )
     post_discretization: _PostDiscretizationConfig = Field(
         default_factory=_PostDiscretizationConfig,
         description="Post-discretization settings.",
@@ -120,8 +190,35 @@ class _SolvingOptionsConfig(BaseModel):
     keep_files: bool = Field(
         False, description="Whether to keep LPs and MPS files after solving."
     )
+    store_model: bool = Field(
+        False,
+        description="Store the linopy model to a NetCDF file after solving. Not supported with rolling_horizon. Not scenario-aware.",
+    )
     model_kwargs: _ModelKwargsConfig = Field(
         default_factory=_ModelKwargsConfig, description="Model kwargs for linopy."
+    )
+
+    @model_validator(mode="after")
+    def check_store_model_rolling_horizon(self):
+        if self.rolling_horizon and self.store_model:
+            raise ValueError("store_model is not supported with rolling_horizon")
+        return self
+
+
+class _OperationsConfig(BaseModel):
+    """Configuration for `solving.operations` settings (rule `solve_operations_network`)."""
+
+    rolling_horizon: bool = Field(
+        False,
+        description="Whether rule `solve_operations_network` re-dispatches the fixed-capacity network in a rolling horizon manner, splitting the snapshots into slices of size `horizon` which are solved consecutively. Independent from `solving.options.rolling_horizon`, which controls rule `solve_network`.",
+    )
+    horizon: int = Field(
+        365,
+        description="Number of snapshots per slice in rolling horizon operational dispatch.",
+    )
+    overlap: int = Field(
+        0,
+        description="Number of overlapping snapshots between consecutive slices in rolling horizon operational dispatch.",
     )
 
 
@@ -183,9 +280,12 @@ class _CheckObjectiveConfig(BaseModel):
     """Configuration for `solving.check_objective` settings."""
 
     enable: bool = Field(False, description="Enable objective value checking.")
-    expected_value: float | None = Field(None, description="Expected objective value.")
-    atol: float = Field(1_000_000, description="Absolute tolerance.")
-    rtol: float = Field(0.01, description="Relative tolerance.")
+    expected_value: float | dict[int, float] | None = Field(
+        None,
+        description="Expected objective value. A single value for single-solve modes, or a mapping of planning horizon to value for myopic foresight.",
+    )
+    atol: float = Field(10_000, description="Absolute tolerance.")
+    rtol: float = Field(0.001, description="Relative tolerance.")
 
     @field_validator("expected_value", mode="before")
     @classmethod
@@ -230,6 +330,10 @@ class SolvingConfig(BaseModel):
     options: _SolvingOptionsConfig = Field(
         default_factory=_SolvingOptionsConfig, description="Solving options."
     )
+    operations: _OperationsConfig = Field(
+        default_factory=_OperationsConfig,
+        description="Operational dispatch options for rule `solve_operations_network`.",
+    )
     agg_p_nom_limits: _AggPNomLimitsConfig = Field(
         default_factory=_AggPNomLimitsConfig,
         description="Aggregate p_nom limits configuration.",
@@ -261,6 +365,14 @@ class SolvingConfig(BaseModel):
                 "dual_feasibility_tolerance": 1e-5,
                 "random_seed": 123,
             },
+            "highs-hipo": {
+                "solver": "hipo",
+                "parallel": "on",
+                "primal_feasibility_tolerance": 1e-5,
+                "dual_feasibility_tolerance": 1e-5,
+                "random_seed": 123,
+                "run_crossover": "off",
+            },
             "gurobi-default": {
                 "threads": 32,
                 "method": 2,
@@ -270,6 +382,7 @@ class SolvingConfig(BaseModel):
                 "AggFill": 0,
                 "PreDual": 0,
                 "GURO_PAR_BARDENSETHRESH": 200,
+                "IISMethod": 1,
             },
             "gurobi-numeric-focus": {
                 "NumericFocus": 3,
@@ -313,11 +426,42 @@ class SolvingConfig(BaseModel):
                 "PDLPTol": 1e-5,
                 "Crossover": 0,
             },
+            "xpress-default": {
+                "threads": 8,
+                "lpflags": 4,
+                "crossover": 0,
+                "bargaptarget": 1e-5,
+                "baralg": 2,
+            },
+            "xpress-gpu": {
+                "lpflags": 4,
+                "crossover": 0,
+                "baralg": 4,
+                "barhggpu": 1,
+                "barhgreltol": 1e-5,
+            },
             "cbc-default": {},
             "glpk-default": {},
         },
         description="Dictionaries with solver-specific parameter settings.",
     )
+
+    @field_validator("solver_options")
+    @classmethod
+    def check_no_gurobi_credentials(cls, v):
+        """Prevent Gurobi license credentials from being stored in config."""
+        forbidden_keys = {"WLSACCESSID", "WLSSECRET", "LICENSEID"}
+        for solver_name, options in v.items():
+            if "env" in options:
+                found = forbidden_keys & set(options["env"].keys())
+                if found:
+                    raise ValueError(
+                        f"Gurobi license credentials ({', '.join(found)}) must not be set in config to avoid leaking secrets. "
+                        "Use a license file instead or check the PyPSA options documentation on how to pass solver_options via environment variables, "
+                        'e.g. PYPSA_PARAMS__OPTIMIZE__SOLVER_OPTIONS={"env": {"WLSACCESSID": "...", "WLSSECRET": "...", "LICENSEID": 1234}}'
+                    )
+        return v
+
     check_objective: _CheckObjectiveConfig = Field(
         default_factory=_CheckObjectiveConfig,
         description="Objective checking configuration.",
