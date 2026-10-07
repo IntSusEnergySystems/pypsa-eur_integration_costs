@@ -512,12 +512,14 @@ def _bus_country(n: pypsa.Network, bus: str) -> str:
 
 def apply_tyndp_ac_capacities(n: pypsa.Network, config: dict) -> None:
     """
-    Set cross-border AC line ratings to the configured TYNDP capacities.
+    Keep cross-border AC capacity at today's level before optimisation.
 
-    Applied while the network is composed, so the solved model uses these
-    ratings directly. ``s_nom`` and ``s_nom_min`` of each AC corridor are the
-    TYNDP value for that country pair. When ``expansion_limit`` is set,
-    ``s_nom_max`` and DC ``p_nom_max`` are that capacity times ``max_expansion``.
+    Clustering sums circuit ratings, which overstates the transfer capacity.
+    ``s_nom`` and ``s_nom_min`` of each country pair are therefore reset to the
+    configured current capacity. Parallel lines on the same border share that
+    capacity so the corridor total stays at today's level. The expansion cap is
+    ``s_nom_min * max_expansion``, not the clustered rating. DC expansion uses
+    ``p_nom_min`` the same way.
     """
     tyndp = config.get("TYNDP_values")
     if not tyndp or config.get("foresight") != "overnight":
@@ -530,25 +532,26 @@ def apply_tyndp_ac_capacities(n: pypsa.Network, config: dict) -> None:
         left, right = key.split("_")
         pair_mw[frozenset((left.upper(), right.upper()))] = float(value)
 
-    matched = 0
+    grouped: dict[frozenset, list] = {}
     for idx, row in n.lines.iterrows():
-        pair = frozenset(
-            (_bus_country(n, row.bus0), _bus_country(n, row.bus1))
-        )
-        if pair not in pair_mw:
-            continue
-        n.lines.at[idx, "s_nom"] = pair_mw[pair]
-        n.lines.at[idx, "s_nom_min"] = pair_mw[pair]
-        matched += 1
+        pair = frozenset((_bus_country(n, row.bus0), _bus_country(n, row.bus1)))
+        if pair in pair_mw and len(pair) == 2:
+            grouped.setdefault(pair, []).append(idx)
+
+    for pair, indices in grouped.items():
+        share = pair_mw[pair] / len(indices)
+        n.lines.loc[indices, "s_nom"] = share
+        n.lines.loc[indices, "s_nom_min"] = share
 
     if tyndp.get("expansion_limit"):
         factor = float(tyndp["max_expansion"])
-        n.lines["s_nom_max"] = n.lines["s_nom"] * factor
+        n.lines["s_nom_max"] = n.lines["s_nom_min"] * factor
         dc = n.links["carrier"] == "DC"
-        n.links.loc[dc, "p_nom_max"] = n.links.loc[dc, "p_nom"] * factor
+        n.links.loc[dc, "p_nom_max"] = n.links.loc[dc, "p_nom_min"] * factor
 
     logger.info(
-        "Set TYNDP capacities on %s AC lines (%s country pairs configured).",
-        matched,
-        len(pair_mw),
+        "Set current AC capacity on %s lines across %s country pairs. "
+        "Expansion caps use s_nom_min, not clustered ratings.",
+        sum(len(indices) for indices in grouped.values()),
+        len(grouped),
     )
