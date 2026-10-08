@@ -1194,6 +1194,9 @@ def add_generation(
     nodes = pop_layout.index
 
     for generator, carrier in conventionals.items():
+        if str(generator).lower() == "nuclear":
+            logger.info("Not adding nuclear as a link; nuclear stays a generator.")
+            continue
         carrier_nodes = vars(spatial)[carrier].nodes
 
         add_carrier_buses(

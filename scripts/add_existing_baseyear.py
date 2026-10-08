@@ -231,6 +231,17 @@ def add_power_capacities_installed_before_baseyear(
     # drop unused fueltypes and technologies
     df_agg.drop(df_agg.index[df_agg.Fueltype.isin(fueltype_to_drop)], inplace=True)
     df_agg.drop(df_agg.index[df_agg.Technology.isin(technology_to_drop)], inplace=True)
+
+    # Nuclear stays a generator. Adding it here would create a second fleet of links.
+    is_nuclear = df_agg.Fueltype.str.lower().eq("nuclear")
+    if is_nuclear.any():
+        logger.info(
+            "Not adding %d nuclear plants as links; existing nuclear capacity "
+            "comes from powerplants.csv, excluding units already decommissioned.",
+            int(is_nuclear.sum()),
+        )
+        df_agg = df_agg.loc[~is_nuclear].copy()
+
     df_agg.Fueltype = df_agg.Fueltype.map(rename_fuel)
 
     # Fill missing DateIn

@@ -74,7 +74,6 @@ def constraint_vre_capacities(n: pypsa.Network, snakemake) -> pypsa.Network:
         logger.info("Fixing %s VRE generators to the reference optimum.", len(common))
         n.generators.loc[common, "p_nom_min"] = reference_caps.loc[common]
         n.generators.loc[common, "p_nom_max"] = reference_caps.loc[common]
-        fix_be_nuclear(n)
     elif name == "flexible_nuclear":
         network = reference_network(snakemake)
         gen_mask = network.generators.carrier == "nuclear"
@@ -85,8 +84,6 @@ def constraint_vre_capacities(n: pypsa.Network, snakemake) -> pypsa.Network:
         n.generators.loc[common, "p_nom_max"] = reference_caps.loc[common]
         n.generators.loc[common, "p_nom"] = reference_caps.loc[common]
         n.generators.loc[common, "p_max_pu"] = 0.9999
-    else:
-        fix_be_nuclear(n)
     return n
 
 
@@ -104,7 +101,9 @@ def _add_generation_limit(n, network, carriers) -> None:
         generation = (local_gen_p * n.snapshot_weightings.generators).sum("snapshot")
 
         gen_mask = network.generators.carrier == carrier
-        data = network.generators_t.p.loc[:, gen_mask].sum(axis=0)
+        dispatch = network.generators_t.p.loc[:, gen_mask]
+        weights = network.snapshot_weightings.generators.reindex(dispatch.index)
+        data = dispatch.mul(weights, axis=0).sum(axis=0)
         data_xr = data.to_xarray()
         bus_info = network.generators.loc[data_xr.coords["name"].values, "bus"]
         data_xr_bus = data_xr.groupby(xr.DataArray(bus_info, dims="name")).sum()

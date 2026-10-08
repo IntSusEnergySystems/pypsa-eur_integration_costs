@@ -34,6 +34,7 @@ from scripts.add_brownfield import adjust_renewable_capacity_limits
 from scripts.add_brownfield import main as apply_brownfield
 from scripts.add_electricity import main as add_electricity_components
 from scripts.add_electricity import (
+    apply_nuclear_capacity,
     sanitize_carriers,
     sanitize_locations,
 )
@@ -119,6 +120,10 @@ if __name__ == "__main__":
 
     prepare_network_for_solving(n, inputs, params, costs, nyears, current_horizon)
     apply_tyndp_ac_capacities(n, config)
+
+    # Overnight years are solved independently. Existing nuclear is the
+    # powerplants still online in this horizon, not capacity built in another year.
+    apply_nuclear_capacity(n, inputs.powerplants, current_horizon)
 
     if foresight == "myopic" and not is_first_horizon:
         apply_brownfield(
