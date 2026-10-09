@@ -59,6 +59,36 @@ def fix_be_nuclear(n: pypsa.Network) -> None:
     n.generators.loc[nuclear, "p_nom_min"] = 2000
 
 
+_FLEXIBLE_CARRIERS = {
+    "flexible_solar": ["solar", "solar rooftop", "solar-hsat"],
+    "flexible_onwind": ["onwind"],
+    "flexible_offshore": ["offwind-float", "offwind-ac", "offwind-dc"],
+    "flexible_vre": [
+        "solar",
+        "solar rooftop",
+        "onwind",
+        "offwind-float",
+        "offwind-ac",
+        "offwind-dc",
+        "solar-hsat",
+    ],
+}
+
+
+def _set_flexible_availability(n: pypsa.Network, name: str) -> None:
+    """Make the scenario technology dispatchable, as in the pre-merge model."""
+    carriers = _FLEXIBLE_CARRIERS.get(name)
+    if not carriers:
+        return
+    cols = n.generators.index[n.generators.carrier.isin(carriers)]
+    cols = cols.intersection(n.generators_t.p_max_pu.columns)
+    if cols.empty:
+        logger.warning("No %s generators with a p_max_pu profile.", name)
+        return
+    n.generators_t.p_max_pu.loc[:, cols] = 0.9999999
+    logger.info("Set p_max_pu to 1 for %s %s generators.", len(cols), name)
+
+
 def constraint_vre_capacities(n: pypsa.Network, snakemake) -> pypsa.Network:
     """Freeze VRE or nuclear capacity at the reference optimum before solving."""
     name = _run_name(snakemake)
@@ -74,6 +104,7 @@ def constraint_vre_capacities(n: pypsa.Network, snakemake) -> pypsa.Network:
         logger.info("Fixing %s VRE generators to the reference optimum.", len(common))
         n.generators.loc[common, "p_nom_min"] = reference_caps.loc[common]
         n.generators.loc[common, "p_nom_max"] = reference_caps.loc[common]
+        _set_flexible_availability(n, name)
     elif name == "flexible_nuclear":
         network = reference_network(snakemake)
         gen_mask = network.generators.carrier == "nuclear"
@@ -83,7 +114,17 @@ def constraint_vre_capacities(n: pypsa.Network, snakemake) -> pypsa.Network:
         n.generators.loc[common, "p_nom_min"] = reference_caps.loc[common]
         n.generators.loc[common, "p_nom_max"] = reference_caps.loc[common]
         n.generators.loc[common, "p_nom"] = reference_caps.loc[common]
-        n.generators.loc[common, "p_max_pu"] = 0.9999
+        n.generators.loc[common, "p_max_pu"] = 1
+        # Country capacity factors live on the static attribute. A time series,
+        # if present, would override it, so both are set to full availability.
+        if not n.generators_t.p_max_pu.empty:
+            n.generators_t.p_max_pu = n.generators_t.p_max_pu.reindex(
+                columns=n.generators_t.p_max_pu.columns.union(common)
+            )
+        else:
+            n.generators_t.p_max_pu = pd.DataFrame(index=n.snapshots, columns=common)
+        n.generators_t.p_max_pu.loc[:, common] = 1
+        logger.info("Set nuclear p_max_pu to 1 for %s generators.", len(common))
     return n
 
 
